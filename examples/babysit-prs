@@ -1,0 +1,13 @@
+#!/bin/bash
+# Example launchd wrapper for babysit-prs.
+#
+# Copy this somewhere on your machine (for example ~/.local/bin/babysit-prs),
+# make it executable, and point the launchd plist at it. It ensures `gh`,
+# `python3`, and (optionally) `terminal-notifier` are on PATH when launchd
+# invokes the tool directly, then execs the script.
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$PATH"
+
+# Point this at wherever you cloned the repo.
+exec /usr/bin/env python3 "$HOME/repos/babysit-prs/babysit_prs.py" "$@"

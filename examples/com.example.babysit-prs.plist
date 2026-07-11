@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.babysit-prs</string>
+
+    <!-- Point at your copy of the wrapper (see examples/babysit-prs). Add any
+         flags you want, for example one or more --owner values to limit the
+         scan to specific orgs. With no --owner, all of your open PRs are
+         watched (bounded by --active-days). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/.local/bin/babysit-prs</string>
+        <!-- <string>&#45;&#45;owner</string><string>your-org</string> -->
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Every 15 minutes. De-duping in the tool means you are only pinged
+         when a PR's state actually changes, not every run. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/babysit-prs.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/babysit-prs.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/YOU</string>
+    </dict>
+</dict>
+</plist>

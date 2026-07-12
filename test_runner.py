@@ -1,5 +1,5 @@
 # pylint: disable=missing-function-docstring,protected-access
-"""Tests for runner: signature, scan window, and the run-loop mechanics."""
+"""Tests for runner: scan window and the run-loop mechanics."""
 
 from __future__ import annotations
 
@@ -10,23 +10,8 @@ from unittest import mock
 
 from prfixtures import HEAD, ME, REQUIRED, _args, check_run, make_pr
 
-import constants
 import effects
 import runner
-
-
-def test_signature_empty_and_excludes_new_comment() -> None:
-    assert runner.signature([]) == ""
-    assert runner.signature([constants.ALERT_NEW_COMMENT]) == ""
-    assert runner.signature(
-        [constants.ALERT_READY, constants.ALERT_NEW_COMMENT]
-    ) == runner.signature([constants.ALERT_READY])
-
-
-def test_signature_order_independent() -> None:
-    assert runner.signature(
-        [constants.ALERT_READY, constants.ALERT_CONFLICTS]
-    ) == runner.signature([constants.ALERT_CONFLICTS, constants.ALERT_READY])
 
 
 def test_scan_window_widens_to_keep_nudge_reachable() -> None:

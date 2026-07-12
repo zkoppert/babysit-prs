@@ -1,4 +1,4 @@
-"""Orchestration: the per-PR run loop, de-dup state machine, notify glue."""
+"""Orchestration: the per-PR run loop and notification glue."""
 
 from __future__ import annotations
 
@@ -14,13 +14,12 @@ from classify import Decision, classify
 from constants import (
     ALERT_CI_STILL_FAILING,
     ALERT_LABELS,
-    ALERT_NEW_COMMENT,
-    ALERT_NUDGE_REVIEWERS,
     ALERT_ORDER,
     ALERT_UPDATE_FAILED,
     DEFAULT_NUDGE_WEEKDAYS,
     logger,
 )
+from dedup import advance_dedup_state, should_notify
 from effects import (
     acquire_lock,
     load_state,
@@ -51,19 +50,6 @@ def _scan_window_days(active_days: int, nudge_weekdays: int) -> int:
         return active_days
     nudge_calendar_days = ((nudge_weekdays + 4) // 5) * 7 + 7
     return max(active_days, nudge_calendar_days)
-
-
-def signature(alerts: list[str]) -> str:
-    """Stable de-dup key for the persistent alerts on a PR.
-
-    The event-like alerts ``new-comment`` and ``nudge-reviewers`` are excluded
-    here and de-duped separately (by ``last_activity`` and ``nudged_at``), so
-    that their firing once and then dropping off does not change the persistent
-    signature and cause a spurious re-notify. Excluding the nudge also lets it
-    re-fire after real activity resets the PR, rather than being a one-shot.
-    """
-    event_like = {ALERT_NEW_COMMENT, ALERT_NUDGE_REVIEWERS}
-    return "|".join(sorted(a for a in alerts if a not in event_like))
 
 
 @dataclass
@@ -232,35 +218,22 @@ def _decide_notify(
     stats: BabysitStats,
     new_state: dict[str, Any],
 ) -> None:
-    """Notify once if the PR's state changed, and advance the de-dup state.
+    """Notify once if the PR's state changed, then advance the de-dup state.
 
-    The nudge is event-like: notify once per idle episode, keyed on the
-    ``updatedAt`` it fired at, so a fresh idle period (new ``updatedAt``)
-    re-fires but a standing nudge stays quiet every run.
+    The decision of whether to notify and how to advance the de-dup state is
+    pure and lives in ``dedup``; this only wires it to the notification I/O.
     """
-    sig = signature(decision.alerts)
     updated_at = pr.get("updatedAt") or ""
-    nudge_event = (
-        ALERT_NUDGE_REVIEWERS in decision.alerts
-        and updated_at != new_state["nudged_at"]
+    notify_now = should_notify(decision.alerts, updated_at, new_state)
+    delivered = _emit(title, decision, pr_url, ctx, stats) if notify_now else False
+    advance_dedup_state(
+        new_state,
+        alerts=decision.alerts,
+        current_activity=decision.current_activity,
+        updated_at=updated_at,
+        notify_now=notify_now,
+        delivered=delivered,
     )
-    should_notify = (
-        (bool(sig) and sig != new_state["notified_sig"])
-        or ALERT_NEW_COMMENT in decision.alerts
-        or nudge_event
-    )
-    delivered = _emit(title, decision, pr_url, ctx, stats) if should_notify else False
-
-    if not (should_notify and not delivered):
-        # Nothing to notify, or notified successfully: advance de-dup.
-        # Preserve a previously-notified persistent signature when the current
-        # one is empty, so an alert that transiently disappears and reappears
-        # on the same commit is not re-notified.
-        new_state["notified_sig"] = sig or new_state["notified_sig"]
-        if decision.current_activity:
-            new_state["last_activity"] = decision.current_activity
-        if ALERT_NUDGE_REVIEWERS in decision.alerts:
-            new_state["nudged_at"] = updated_at
 
 
 def _emit(

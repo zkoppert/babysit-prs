@@ -638,6 +638,19 @@ def test_nudge_fires_when_required_unknown_but_ci_green() -> None:
     assert bp.ALERT_NUDGE_REVIEWERS in decision.alerts
 
 
+def test_nudge_suppressed_when_required_unknown_and_ci_pending() -> None:
+    # With protection unreadable we cannot tell an unfinished check is required,
+    # so an in-flight check keeps the ball off the reviewers: no nudge.
+    pr = make_pr(
+        mergeStateStatus="BLOCKED",
+        reviewDecision="REVIEW_REQUIRED",
+        updatedAt=OLD,
+        statusCheckRollup=[check_run("build", "", "IN_PROGRESS")],
+    )
+    decision = bp.classify(pr, UNKNOWN, ME, {}, now=NOW, nudge_weekdays=3)
+    assert bp.ALERT_NUDGE_REVIEWERS not in decision.alerts
+
+
 def test_nudge_disabled_when_weekdays_zero() -> None:
     pr = make_pr(mergeStateStatus="BLOCKED", updatedAt=OLD)
     decision = bp.classify(pr, REQUIRED, ME, {}, now=NOW, nudge_weekdays=0)
@@ -969,7 +982,7 @@ def test_run_rerun_failure_alerts_and_stops_retrying(tmp_path: Path) -> None:
         m["notify"].return_value = True
         stats = bp.run(_args(tmp_path))
         m["notify"].assert_called_once()
-        assert "CI still failing" in m["notify"].call_args.args[1]
+        assert "Failing CI" in m["notify"].call_args.args[1]
         assert stats.reran == 0
     # rerun_head advanced so the next run does not retry the doomed re-run forever
     saved = json.loads((tmp_path / "state.json").read_text())

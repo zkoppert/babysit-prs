@@ -93,7 +93,7 @@ ALERT_ORDER: tuple[str, ...] = (
 ALERT_LABELS: dict[str, str] = {
     ALERT_CONFLICTS: "Merge conflicts",
     ALERT_CHANGES_REQUESTED: "Changes requested",
-    ALERT_CI_STILL_FAILING: "CI still failing after re-run",
+    ALERT_CI_STILL_FAILING: "Failing CI",
     ALERT_UPDATE_FAILED: "Branch update failed",
     ALERT_NEW_COMMENT: "New review comment",
     ALERT_NUDGE_REVIEWERS: "Waiting on reviewers, time to nudge",
@@ -419,15 +419,16 @@ def check_is_failed(entry: dict[str, Any]) -> bool:
     return (entry.get("state") or "").upper() in FAILURE_STATES
 
 
-def _has_failing_check(pr: dict[str, Any]) -> bool:
-    """Return True when any visible rollup check has failed.
+def _has_unfinished_or_failing_check(pr: dict[str, Any]) -> bool:
+    """Return True when any visible rollup check is pending or has failed.
 
     Unlike ``required_check_status`` this ignores the required-check set, so it
-    still sees red CI when branch protection is unreadable. Used only to
-    suppress the reviewer nudge in that blind spot.
+    still sees red or in-flight CI when branch protection is unreadable. Used
+    only to suppress the reviewer nudge in that blind spot, where we cannot
+    tell whether an unfinished or failed check is the real blocker.
     """
     return any(
-        isinstance(entry, dict) and check_is_failed(entry)
+        isinstance(entry, dict) and (check_is_pending(entry) or check_is_failed(entry))
         for entry in pr.get("statusCheckRollup") or []
     )
 
@@ -648,7 +649,7 @@ def _nudge_blocked(
     """
     if decision.do_rerun or decision.do_update_branch or required_pending:
         return True
-    if not required.known and _has_failing_check(pr):
+    if not required.known and _has_unfinished_or_failing_check(pr):
         return True
     if (pr.get("reviewDecision") or "").upper() == "APPROVED":
         return True
@@ -715,7 +716,7 @@ def signature(alerts: list[str]) -> str:
 
     The event-like alerts ``new-comment`` and ``nudge-reviewers`` are excluded
     here and de-duped separately (by ``last_activity`` and ``nudged_at``), so
-    that they firing once and then dropping off does not change the persistent
+    that their firing once and then dropping off does not change the persistent
     signature and cause a spurious re-notify. Excluding the nudge also lets it
     re-fire after real activity resets the PR, rather than being a one-shot.
     """
@@ -733,8 +734,7 @@ def rerun_runs(repo: str, run_ids: list[int], *, dry_run: bool) -> bool:
 
     Returns True when at least one re-run was triggered (or in dry-run),
     so the caller only records ``rerun_head`` when a re-run actually
-    happened and does not later claim "still failing after re-run" for a
-    re-run that never occurred.
+    happened rather than for a re-run that never occurred.
     """
     if not run_ids:
         return False

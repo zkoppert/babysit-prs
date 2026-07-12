@@ -8,19 +8,27 @@ It is a small, dependency-free Python script designed to run every few minutes f
 
 ## What it does
 
-For each of your recently-active open PRs (optionally limited to specific owners), it:
+For each of your recently-active open PRs (those you authored or are assigned to, optionally limited to specific owners), it:
 
 - **Re-runs failed required checks** once per head commit (`gh run rerun --failed` on the exact Actions runs backing the failed required checks), then notifies you only if they are still red after that retry. This is the flaky-test retry.
 - **Updates the branch** (`gh pr update-branch`) when the base requires up-to-date branches and the PR is cleanly behind, so CI re-runs against the latest base without your involvement.
-- **Notifies you** when a PR needs a human: merge conflicts, changes requested, a new human review comment (including inline review-thread replies; bots and the Copilot reviewer are excluded), a failed branch update, a required check still failing after the retry, or a non-draft PR that is green and ready to merge.
+- **Notifies you** when a PR needs a human: merge conflicts, changes requested, a new review comment (including inline review-thread replies and the Copilot reviewer's comments; noisy bots like CI and Dependabot are excluded), a failed branch update, a required check still failing after the retry, a non-draft PR that is green and ready to merge, or a PR that has sat ready with no activity for several weekdays and needs a reviewer nudge.
+
+### Whose PRs, and which ones
+
+The scan is the union of PRs you **authored** and PRs **assigned to you**, deduplicated (`gh search prs --author=@me` and `--assignee=@me`), limited to those updated within the recency window. Auto-actions (re-running checks, updating the branch) apply only to PRs you **authored**; PRs you are merely assigned to are alert-only, since they are not your branch to mutate.
 
 ### Guardrails
 
 The auto-actions are deliberately conservative:
 
-- Only **required** checks are ever re-run. If the required set cannot be read (you lack admin on the repo, or it uses rulesets you cannot see), CI auto-actions are skipped for that PR rather than guessed at.
+- Only **required** checks are ever re-run, and only on PRs you authored. If the required set cannot be read (you lack admin on the repo, or it uses rulesets you cannot see), CI auto-actions are skipped for that PR rather than guessed at.
 - A branch is only updated when the base is **strict** (requires up-to-date branches) and the PR is cleanly **behind**. Merge conflicts are never auto-resolved; they are surfaced for you.
 - Everything ambiguous is left for you.
+
+### The reviewer nudge
+
+For a PR you authored that is open, non-draft, and has had no updates, reviews, or comments for `--nudge-weekdays` weekdays (default 3, weekends excluded), the tool sends a clickable "waiting on reviewers" notification so you can nudge them. It only fires when the ball is on the reviewers' side, so it stays quiet when the PR has conflicts, requested changes, failing CI, or is already ready to merge. Set `--nudge-weekdays 0` to disable it. The scan window (`--active-days`) is widened automatically to cover the nudge threshold, so a short `--active-days` never silently hides a nudge-eligible PR.
 
 ### Quiet by default
 
@@ -52,15 +60,16 @@ python3 ~/repos/babysit-prs/babysit_prs.py --dry-run --verbose
 ## Usage
 
 ```text
-babysit_prs.py [--owner OWNER] [--active-days N] [--allowed-repo OWNER/REPO]
-               [--skip-repo OWNER/REPO] [--dry-run] [--no-notify]
-               [--state-file PATH] [--verbose]
+babysit_prs.py [--owner OWNER] [--active-days N] [--nudge-weekdays N]
+               [--allowed-repo OWNER/REPO] [--skip-repo OWNER/REPO]
+               [--dry-run] [--no-notify] [--state-file PATH] [--verbose]
 ```
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--owner OWNER` | all | Limit to PRs in this org/user owner. Repeatable. |
-| `--active-days N` | `14` | Only watch PRs updated in the last N days (0 = no limit). |
+| `--active-days N` | `14` | Only watch PRs updated in the last N days (0 = no limit). Widened automatically when `--nudge-weekdays` needs a longer window. |
+| `--nudge-weekdays N` | `3` | Nudge reviewers on an authored PR idle this many weekdays (0 disables). |
 | `--allowed-repo OWNER/REPO` | all | Restrict to specific repos. Repeatable. |
 | `--skip-repo OWNER/REPO` | none | Never act on a repo (for example a fixture). Repeatable. |
 | `--dry-run` | off | Preview only: no re-runs, branch updates, or notifications. |
@@ -71,11 +80,14 @@ babysit_prs.py [--owner OWNER] [--active-days N] [--allowed-repo OWNER/REPO]
 Examples:
 
 ```bash
-# Watch every open PR you authored, updated in the last two weeks.
+# Watch every open PR you authored or are assigned to, updated in the last two weeks.
 python3 babysit_prs.py
 
 # Limit to two orgs and skip a fixture repo.
 python3 babysit_prs.py --owner my-org --owner my-other-org --skip-repo my-org/fixture
+
+# Nudge reviewers after a full business week of silence instead of three days.
+python3 babysit_prs.py --nudge-weekdays 5
 ```
 
 ## Run it on a schedule

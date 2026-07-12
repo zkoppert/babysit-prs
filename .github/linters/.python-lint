@@ -335,8 +335,10 @@ indent-string='    '
 # Maximum number of characters on a single line.
 max-line-length=100
 
-# Maximum number of lines in a module.
-max-module-lines=1000
+# Maximum number of lines in a module. babysit-prs is intentionally a single
+# dependency-free file so it can be dropped in and run without packaging, so
+# this is raised above the pylint default of 1000.
+max-module-lines=1400
 
 # Allow the body of a class to be on the same line as the declaration if body
 # contains single statement.

@@ -15,6 +15,7 @@ de-dup state; re-running non-required checks).
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import subprocess
 from pathlib import Path
@@ -29,6 +30,10 @@ REQUIRED_LOOSE = bp.RequiredChecks(contexts={"ci"}, strict=False)
 UNKNOWN = bp.RequiredChecks(contexts=None, strict=False)
 HEAD = "abc123"
 RUN_URL = "https://github.com/o/r/actions/runs/999/job/1"
+ME = "zkoppert"
+# A fixed "now" and an old timestamp for deterministic nudge tests.
+NOW = datetime.datetime(2026, 7, 13, 12, 0, tzinfo=datetime.timezone.utc)
+OLD = "2026-07-06T00:00:00Z"  # the prior Monday: 5 weekdays before NOW
 # Captured before the autouse stub patches the module attribute, so the
 # direct unit tests below still exercise the real implementation.
 _REAL_FETCH_REVIEW_COMMENTS = bp.fetch_review_comments
@@ -57,6 +62,7 @@ def make_pr(**overrides: Any) -> dict[str, Any]:
         "latestReviews": [],
         "comments": [],
         "reviewComments": [],
+        "author": {"login": ME},
     }
     pr.update(overrides)
     return pr
@@ -159,11 +165,10 @@ def test_required_check_status_pending_required() -> None:
     assert pending is True
 
 
-def test_latest_human_activity_excludes_me_and_bots() -> None:
+def test_latest_human_activity_excludes_me_and_noisy_bots() -> None:
     pr = make_pr(
         latestReviews=[
-            {"author": {"login": "zkoppert"}, "submittedAt": "2026-07-10T00:00:00Z"},
-            {"author": {"login": "Copilot"}, "submittedAt": "2026-07-10T09:00:00Z"},
+            {"author": {"login": "zkoppert"}, "submittedAt": "2026-07-10T09:00:00Z"},
             {
                 "author": {"login": "dr-robot-nux"},
                 "submittedAt": "2026-07-10T05:00:00Z",
@@ -177,14 +182,41 @@ def test_latest_human_activity_excludes_me_and_bots() -> None:
             {"author": {"login": "octocat"}, "createdAt": "2026-07-10T06:00:00Z"},
         ],
     )
+    # My own 09:00 review and the dependabot 08:00 comment are excluded; the
+    # newest remaining human activity is octocat at 06:00.
     assert bp.latest_human_activity(pr, "zkoppert") == "2026-07-10T06:00:00Z"
 
 
-def test_latest_human_activity_none_when_no_humans() -> None:
+def test_latest_human_activity_includes_copilot_reviewer() -> None:
     pr = make_pr(
         latestReviews=[
-            {"author": {"login": "Copilot"}, "submittedAt": "2026-07-10T09:00:00Z"}
-        ]
+            {
+                "author": {"login": "copilot-pull-request-reviewer[bot]"},
+                "submittedAt": "2026-07-10T09:00:00Z",
+            }
+        ],
+        comments=[
+            {"author": {"login": "octocat"}, "createdAt": "2026-07-10T06:00:00Z"}
+        ],
+    )
+    # The Copilot reviewer's comment is actionable, so it counts and wins.
+    assert bp.latest_human_activity(pr, "zkoppert") == "2026-07-10T09:00:00Z"
+
+
+def test_latest_human_activity_none_when_only_noisy_bots() -> None:
+    pr = make_pr(
+        latestReviews=[
+            {
+                "author": {"login": "github-actions"},
+                "submittedAt": "2026-07-10T09:00:00Z",
+            }
+        ],
+        comments=[
+            {
+                "author": {"login": "dependabot[bot]"},
+                "createdAt": "2026-07-10T08:00:00Z",
+            }
+        ],
     )
     assert bp.latest_human_activity(pr, "zkoppert") is None
 
@@ -245,9 +277,21 @@ def test_signature_order_independent() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_search_queries_author_and_assignee() -> None:
+    with mock.patch.object(bp, "run_gh", return_value="[]") as run_mock:
+        bp.search_my_open_prs(set(), set(), active_days=7)
+    roles = [
+        arg
+        for call in run_mock.call_args_list
+        for arg in call.args[0]
+        if arg in ("--author=@me", "--assignee=@me")
+    ]
+    assert set(roles) == {"--author=@me", "--assignee=@me"}
+
+
 def test_search_applies_active_window() -> None:
     with mock.patch.object(bp, "run_gh", return_value="[]") as run_mock:
-        bp.search_my_open_prs(frozenset({"zkoppert"}), set(), active_days=7)
+        bp.search_my_open_prs({"zkoppert"}, set(), active_days=7)
     called = run_mock.call_args.args[0]
     assert any(a.startswith("updated:>=") for a in called)
     assert "--owner=zkoppert" in called
@@ -255,7 +299,7 @@ def test_search_applies_active_window() -> None:
 
 def test_search_no_window_when_zero() -> None:
     with mock.patch.object(bp, "run_gh", return_value="[]") as run_mock:
-        bp.search_my_open_prs(frozenset({"zkoppert"}), set(), active_days=0)
+        bp.search_my_open_prs({"zkoppert"}, set(), active_days=0)
     assert not any(a.startswith("updated:>=") for a in run_mock.call_args.args[0])
 
 
@@ -263,6 +307,19 @@ def test_search_no_owner_filter_when_empty() -> None:
     with mock.patch.object(bp, "run_gh", return_value="[]") as run_mock:
         bp.search_my_open_prs(set(), set())
     assert not any(a.startswith("--owner=") for a in run_mock.call_args.args[0])
+
+
+def test_search_unions_and_dedups_author_assignee() -> None:
+    author_rows = json.dumps([{"number": 1, "repository": {"nameWithOwner": "o/a"}}])
+    assignee_rows = json.dumps(
+        [
+            {"number": 1, "repository": {"nameWithOwner": "o/a"}},  # dup of author
+            {"number": 2, "repository": {"nameWithOwner": "o/b"}},
+        ]
+    )
+    with mock.patch.object(bp, "run_gh", side_effect=[author_rows, assignee_rows]):
+        prs = bp.search_my_open_prs(set(), set())
+    assert prs == [("o/a", 1), ("o/b", 2)]  # union, deduped, author first
 
 
 def test_search_filters_allowed_and_skip() -> None:
@@ -274,13 +331,36 @@ def test_search_filters_allowed_and_skip() -> None:
         ]
     )
     with mock.patch.object(bp, "run_gh", return_value=rows):
-        allowed = bp.search_my_open_prs(frozenset({"zkoppert"}), {"zkoppert/b"})
-        skipped = bp.search_my_open_prs(
-            frozenset({"zkoppert"}), set(), skip={"zkoppert/fixture"}
-        )
+        allowed = bp.search_my_open_prs({"zkoppert"}, {"zkoppert/b"})
+        skipped = bp.search_my_open_prs({"zkoppert"}, set(), skip={"zkoppert/fixture"})
     assert allowed == [("zkoppert/b", 2)]
     assert ("zkoppert/fixture", 3) not in skipped
     assert ("zkoppert/a", 1) in skipped
+
+
+def test_scan_window_widens_to_keep_nudge_reachable() -> None:
+    # A window narrower than the nudge's weekday span (weekends included) would
+    # drop every nudge-eligible PR before it was fetched, so it is widened.
+    assert bp._scan_window_days(1, 3) == 14  # too small -> covers 3 weekdays
+    assert bp._scan_window_days(14, 15) == 28  # big nudge -> even wider window
+    # Left alone when already wide enough, disabled, or unbounded.
+    assert bp._scan_window_days(14, 3) == 14  # defaults unchanged
+    assert bp._scan_window_days(30, 3) == 30  # explicit larger window kept
+    assert bp._scan_window_days(1, 0) == 1  # nudge disabled, no widening
+    assert bp._scan_window_days(0, 3) == 0  # no limit stays no limit
+
+
+def test_run_widens_scan_window_for_nudge(tmp_path: Path) -> None:
+    # run() must pass the widened window to the search, not the raw --active-days.
+    with mock.patch.multiple(
+        bp,
+        get_my_login=mock.DEFAULT,
+        search_my_open_prs=mock.DEFAULT,
+    ) as m:
+        m["get_my_login"].return_value = ME
+        m["search_my_open_prs"].return_value = []
+        bp.run(_args(tmp_path, active_days=1, nudge_weekdays=3))
+    assert m["search_my_open_prs"].call_args.args[2] == 14
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +483,206 @@ def test_classify_ready_only_when_clean_and_not_draft() -> None:
 
 
 # ---------------------------------------------------------------------------
+# authorship gating: assigned-but-not-authored PRs are alert-only
+# ---------------------------------------------------------------------------
+
+
+def test_assigned_pr_does_not_auto_update_branch() -> None:
+    pr = make_pr(mergeStateStatus="BEHIND", author={"login": "someone-else"})
+    decision = bp.classify(pr, REQUIRED, ME, {})
+    assert decision.do_update_branch is False
+
+
+def test_assigned_pr_does_not_rerun_but_alerts() -> None:
+    pr = make_pr(
+        mergeStateStatus="BLOCKED",
+        author={"login": "someone-else"},
+        statusCheckRollup=[check_run("ci", "FAILURE")],
+    )
+    decision = bp.classify(pr, REQUIRED, ME, {})
+    assert decision.do_rerun is False
+    assert bp.ALERT_CI_STILL_FAILING in decision.alerts  # surfaced, not re-run
+
+
+def test_assigned_pr_still_gets_human_alerts() -> None:
+    pr = make_pr(
+        mergeStateStatus="DIRTY", mergeable="CONFLICTING", author={"login": "x"}
+    )
+    assert bp.ALERT_CONFLICTS in bp.classify(pr, REQUIRED, ME, {}).alerts
+
+
+# ---------------------------------------------------------------------------
+# weekdays_since + nudge reviewers
+# ---------------------------------------------------------------------------
+
+
+def test_weekdays_since_excludes_weekends() -> None:
+    # Fri 2026-07-10 -> Mon 2026-07-13 is one weekday (the weekend does not count).
+    assert bp.weekdays_since("2026-07-10T00:00:00Z", NOW) == 1
+    # Mon 2026-07-06 -> Mon 2026-07-13 is five weekdays.
+    assert bp.weekdays_since("2026-07-06T00:00:00Z", NOW) == 5
+
+
+def test_weekdays_since_unparseable_or_future_is_zero() -> None:
+    assert bp.weekdays_since("not-a-date", NOW) == 0
+    assert bp.weekdays_since("2026-07-20T00:00:00Z", NOW) == 0
+
+
+def test_nudge_fires_for_idle_authored_pr() -> None:
+    pr = make_pr(
+        mergeStateStatus="BLOCKED", reviewDecision="REVIEW_REQUIRED", updatedAt=OLD
+    )
+    decision = bp.classify(pr, REQUIRED, ME, {}, now=NOW, nudge_weekdays=3)
+    assert bp.ALERT_NUDGE_REVIEWERS in decision.alerts
+
+
+def test_nudge_does_not_fire_before_threshold() -> None:
+    fresh = make_pr(
+        mergeStateStatus="BLOCKED", updatedAt="2026-07-09T00:00:00Z"
+    )  # 2 weekdays
+    decision = bp.classify(fresh, REQUIRED, ME, {}, now=NOW, nudge_weekdays=3)
+    assert bp.ALERT_NUDGE_REVIEWERS not in decision.alerts
+
+
+def test_nudge_never_for_assigned_or_draft() -> None:
+    assigned = make_pr(mergeStateStatus="BLOCKED", updatedAt=OLD, author={"login": "x"})
+    assert (
+        bp.ALERT_NUDGE_REVIEWERS
+        not in bp.classify(assigned, REQUIRED, ME, {}, now=NOW).alerts
+    )
+    draft = make_pr(mergeStateStatus="BLOCKED", updatedAt=OLD, isDraft=True)
+    assert (
+        bp.ALERT_NUDGE_REVIEWERS
+        not in bp.classify(draft, REQUIRED, ME, {}, now=NOW).alerts
+    )
+
+
+def test_nudge_suppressed_when_ball_is_in_my_court() -> None:
+    # Conflicts, failing CI, changes requested, ready-to-merge, a scheduled
+    # rerun, pending CI, or an approval all mean the reviewers are not the
+    # blocker, so no nudge even when idle.
+    def nudged(pr: dict[str, Any]) -> bool:
+        return (
+            bp.ALERT_NUDGE_REVIEWERS
+            in bp.classify(pr, REQUIRED, ME, {}, now=NOW).alerts
+        )
+
+    assert not nudged(
+        make_pr(mergeStateStatus="DIRTY", mergeable="CONFLICTING", updatedAt=OLD)
+    )
+    assert not nudged(
+        make_pr(
+            mergeStateStatus="BLOCKED",
+            reviewDecision="CHANGES_REQUESTED",
+            updatedAt=OLD,
+        )
+    )
+    # Already approved: mine to merge, not a reviewer nudge.
+    assert not nudged(
+        make_pr(mergeStateStatus="BLOCKED", reviewDecision="APPROVED", updatedAt=OLD)
+    )
+    # Ready to merge (CLEAN) is its own alert, not a nudge.
+    assert not nudged(make_pr(mergeStateStatus="CLEAN", updatedAt=OLD))
+    # Failed required check still red after re-run (already reran this head).
+    still_red = make_pr(
+        mergeStateStatus="BLOCKED",
+        updatedAt=OLD,
+        statusCheckRollup=[check_run("ci", "FAILURE")],
+    )
+    assert (
+        bp.ALERT_NUDGE_REVIEWERS
+        not in bp.classify(
+            still_red, REQUIRED, ME, {"rerun_head": HEAD}, now=NOW
+        ).alerts
+    )
+
+
+def test_nudge_not_fired_while_rerun_scheduled() -> None:
+    # First failed-CI run schedules a re-run without a ci-failing alert yet;
+    # the nudge must still be suppressed (CI, not reviewers, is the blocker).
+    pr = make_pr(
+        mergeStateStatus="BLOCKED",
+        updatedAt=OLD,
+        statusCheckRollup=[check_run("ci", "FAILURE")],
+    )
+    decision = bp.classify(pr, REQUIRED, ME, {}, now=NOW)
+    assert decision.do_rerun is True
+    assert bp.ALERT_NUDGE_REVIEWERS not in decision.alerts
+
+
+def test_nudge_not_fired_while_required_pending() -> None:
+    pr = make_pr(
+        mergeStateStatus="BLOCKED",
+        updatedAt=OLD,
+        statusCheckRollup=[check_run("ci", "", "IN_PROGRESS")],
+    )
+    assert (
+        bp.ALERT_NUDGE_REVIEWERS
+        not in bp.classify(pr, REQUIRED, ME, {}, now=NOW).alerts
+    )
+
+
+def test_assigned_behind_pr_still_surfaces_failing_ci() -> None:
+    # A strict+behind PR I did not author is not updated (not my branch), but
+    # its failing required check must still be surfaced, not silently skipped.
+    pr = make_pr(
+        mergeStateStatus="BEHIND",
+        author={"login": "someone-else"},
+        statusCheckRollup=[check_run("ci", "FAILURE")],
+    )
+    decision = bp.classify(pr, REQUIRED, ME, {})
+    assert decision.do_update_branch is False
+    assert decision.do_rerun is False
+    assert bp.ALERT_CI_STILL_FAILING in decision.alerts
+
+
+def test_nudge_suppressed_when_required_unknown_and_ci_red() -> None:
+    # Branch protection is unreadable (a common no-admin case), so the required
+    # set is unknown and there is no ci-failing alert. The raw rollup is still
+    # red, so the ball is on me to green CI, not on the reviewers: no nudge.
+    pr = make_pr(
+        mergeStateStatus="BLOCKED",
+        reviewDecision="REVIEW_REQUIRED",
+        updatedAt=OLD,
+        statusCheckRollup=[check_run("build", "FAILURE")],
+    )
+    decision = bp.classify(pr, UNKNOWN, ME, {}, now=NOW, nudge_weekdays=3)
+    assert bp.ALERT_NUDGE_REVIEWERS not in decision.alerts
+
+
+def test_nudge_fires_when_required_unknown_but_ci_green() -> None:
+    # Same unreadable-protection case, but CI is green, so the fallback must not
+    # over-suppress: an idle authored PR still nudges the reviewers.
+    pr = make_pr(
+        mergeStateStatus="BLOCKED",
+        reviewDecision="REVIEW_REQUIRED",
+        updatedAt=OLD,
+        statusCheckRollup=[check_run("build", "SUCCESS")],
+    )
+    decision = bp.classify(pr, UNKNOWN, ME, {}, now=NOW, nudge_weekdays=3)
+    assert bp.ALERT_NUDGE_REVIEWERS in decision.alerts
+
+
+def test_nudge_suppressed_when_required_unknown_and_ci_pending() -> None:
+    # With protection unreadable we cannot tell an unfinished check is required,
+    # so an in-flight check keeps the ball off the reviewers: no nudge.
+    pr = make_pr(
+        mergeStateStatus="BLOCKED",
+        reviewDecision="REVIEW_REQUIRED",
+        updatedAt=OLD,
+        statusCheckRollup=[check_run("build", "", "IN_PROGRESS")],
+    )
+    decision = bp.classify(pr, UNKNOWN, ME, {}, now=NOW, nudge_weekdays=3)
+    assert bp.ALERT_NUDGE_REVIEWERS not in decision.alerts
+
+
+def test_nudge_disabled_when_weekdays_zero() -> None:
+    pr = make_pr(mergeStateStatus="BLOCKED", updatedAt=OLD)
+    decision = bp.classify(pr, REQUIRED, ME, {}, now=NOW, nudge_weekdays=0)
+    assert bp.ALERT_NUDGE_REVIEWERS not in decision.alerts
+
+
+# ---------------------------------------------------------------------------
 # state + lock
 # ---------------------------------------------------------------------------
 
@@ -437,6 +717,7 @@ def _args(tmp_path: Path, **overrides: Any) -> argparse.Namespace:
         allowed_repo=[],
         skip_repo=[],
         active_days=14,
+        nudge_weekdays=3,
         no_notify=False,
         verbose=False,
     )
@@ -584,6 +865,54 @@ def test_run_no_notify_does_not_consume_dedup(tmp_path: Path) -> None:
         assert m["notify"].call_count == 1
 
 
+def test_nudge_refires_after_activity_then_idle(tmp_path: Path) -> None:
+    """nudge -> reviewer comment -> idle again must re-nudge (not one-shot).
+
+    Regression for the finding that the persistent-signature preservation
+    silenced every nudge after the first reviewer touch. Driven at the
+    _process_pr layer where the de-dup lives, with an injected now.
+    """
+    utc = datetime.timezone.utc
+    ctx = bp.RunContext(
+        my_login=ME,
+        dry_run=False,
+        no_notify=False,
+        state={},
+        now=datetime.datetime(2026, 7, 13, 12, 0, tzinfo=utc),  # Mon
+        nudge_weekdays=3,
+    )
+    ctx.required_cache["o/r@main"] = REQUIRED  # avoid a gh call
+    stats = bp.BabysitStats()
+    with mock.patch.object(
+        bp, "notify", return_value=True
+    ) as notify_mock, mock.patch.object(bp, "fetch_review_comments", return_value=[]):
+        # Run 1: idle 5 weekdays -> nudge fires.
+        bp._process_pr(
+            make_pr(mergeStateStatus="BLOCKED", updatedAt=OLD), "o/r", 1, ctx, stats
+        )
+        assert notify_mock.call_count == 1
+        assert (
+            bp.ALERT_LABELS[bp.ALERT_NUDGE_REVIEWERS] in notify_mock.call_args.args[1]
+        )
+
+        # Run 2: reviewer comments today -> updatedAt bumps, new-comment fires.
+        ctx.now = datetime.datetime(2026, 7, 14, 12, 0, tzinfo=utc)  # Tue
+        commented = make_pr(
+            mergeStateStatus="BLOCKED",
+            updatedAt="2026-07-14T00:00:00Z",
+            comments=[
+                {"author": {"login": "octocat"}, "createdAt": "2026-07-14T00:00:00Z"}
+            ],
+        )
+        bp._process_pr(commented, "o/r", 1, ctx, stats)
+        assert notify_mock.call_count == 2
+
+        # Run 3: idle again 4 weekdays later, no further activity -> re-nudge.
+        ctx.now = datetime.datetime(2026, 7, 20, 12, 0, tzinfo=utc)  # next Mon
+        bp._process_pr(commented, "o/r", 1, ctx, stats)
+        assert notify_mock.call_count == 3
+
+
 def test_run_notify_failure_is_retried(tmp_path: Path) -> None:
     pr = make_pr(mergeStateStatus="CLEAN")
     with mock.patch.multiple(
@@ -678,7 +1007,7 @@ def test_run_rerun_failure_alerts_and_stops_retrying(tmp_path: Path) -> None:
         m["notify"].return_value = True
         stats = bp.run(_args(tmp_path))
         m["notify"].assert_called_once()
-        assert "CI still failing" in m["notify"].call_args.args[1]
+        assert "Failing CI" in m["notify"].call_args.args[1]
         assert stats.reran == 0
     # rerun_head advanced so the next run does not retry the doomed re-run forever
     saved = json.loads((tmp_path / "state.json").read_text())
@@ -1009,6 +1338,11 @@ def test_parse_args_owner_repeatable() -> None:
     ns = bp.parse_args(["--owner", "a", "--owner", "b", "--dry-run"])
     assert ns.owner == ["a", "b"]
     assert ns.dry_run is True
+
+
+def test_parse_args_nudge_weekdays_default_and_override() -> None:
+    assert bp.parse_args([]).nudge_weekdays == bp.DEFAULT_NUDGE_WEEKDAYS
+    assert bp.parse_args(["--nudge-weekdays", "5"]).nudge_weekdays == 5
 
 
 def test_main_returns_exit_code() -> None:

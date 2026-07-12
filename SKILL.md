@@ -27,7 +27,9 @@ comment (including the Copilot reviewer's; noisy bots like CI and Dependabot
 excluded), a failed branch update, a required check still failing after the
 retry, a non-draft PR that is green and ready to merge, or an authored PR that
 has sat ready with no activity for `--nudge-weekdays` weekdays (default 3) and
-needs a reviewer nudge.
+needs a reviewer nudge. The `--active-days` scan window is widened
+automatically to cover the nudge threshold, so a short window never silently
+hides a nudge-eligible PR.
 
 Guardrails: auto-actions (re-running checks, updating the branch) apply only to
 PRs the user authored; PRs they are merely assigned to are alert-only. Only

@@ -28,7 +28,7 @@ The auto-actions are deliberately conservative:
 
 ### The reviewer nudge
 
-For a PR you authored that is open, non-draft, and has had no updates, reviews, or comments for `--nudge-weekdays` weekdays (default 3, weekends excluded), the tool sends a clickable "waiting on reviewers" notification so you can nudge them. It only fires when the ball is on the reviewers' side, so it stays quiet when the PR has conflicts, requested changes, failing CI, or is already ready to merge. Set `--nudge-weekdays 0` to disable it.
+For a PR you authored that is open, non-draft, and has had no updates, reviews, or comments for `--nudge-weekdays` weekdays (default 3, weekends excluded), the tool sends a clickable "waiting on reviewers" notification so you can nudge them. It only fires when the ball is on the reviewers' side, so it stays quiet when the PR has conflicts, requested changes, failing CI, or is already ready to merge. Set `--nudge-weekdays 0` to disable it. The scan window (`--active-days`) is widened automatically to cover the nudge threshold, so a short `--active-days` never silently hides a nudge-eligible PR.
 
 ### Quiet by default
 
@@ -68,7 +68,7 @@ babysit_prs.py [--owner OWNER] [--active-days N] [--nudge-weekdays N]
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--owner OWNER` | all | Limit to PRs in this org/user owner. Repeatable. |
-| `--active-days N` | `14` | Only watch PRs updated in the last N days (0 = no limit). |
+| `--active-days N` | `14` | Only watch PRs updated in the last N days (0 = no limit). Widened automatically when `--nudge-weekdays` needs a longer window. |
 | `--nudge-weekdays N` | `3` | Nudge reviewers on an authored PR idle this many weekdays (0 disables). |
 | `--allowed-repo OWNER/REPO` | all | Restrict to specific repos. Repeatable. |
 | `--skip-repo OWNER/REPO` | none | Never act on a repo (for example a fixture). Repeatable. |

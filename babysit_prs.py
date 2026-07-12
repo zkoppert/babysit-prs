@@ -128,6 +128,22 @@ def get_my_login() -> str:
     return login
 
 
+def _scan_window_days(active_days: int, nudge_weekdays: int) -> int:
+    """Widen the scan window so a configured nudge stays reachable.
+
+    The scan drops PRs not updated within ``active_days`` calendar days, but
+    the nudge only fires for a PR idle ``nudge_weekdays`` weekdays. If the
+    window were narrower than that weekday span (weekends included), every
+    nudge-eligible PR would be filtered out before it was fetched, silently
+    disabling the nudge. Return a window at least wide enough to reach it.
+    ``active_days == 0`` means no window (scan everything), so leave it as-is.
+    """
+    if active_days <= 0 or nudge_weekdays <= 0:
+        return active_days
+    nudge_calendar_days = ((nudge_weekdays + 4) // 5) * 7 + 7
+    return max(active_days, nudge_calendar_days)
+
+
 def search_my_open_prs(
     owners: set[str] | None,
     allowed: set[str],
@@ -958,9 +974,17 @@ def _run_locked(args: argparse.Namespace, stats: BabysitStats) -> None:
         nudge_weekdays=args.nudge_weekdays,
     )
     allowed = set(args.allowed_repo)
+    scan_days = _scan_window_days(args.active_days, args.nudge_weekdays)
+    if scan_days != args.active_days:
+        logger.debug(
+            "widened scan window from %d to %d days to cover the %d-weekday nudge",
+            args.active_days,
+            scan_days,
+            args.nudge_weekdays,
+        )
 
     for repo, number in search_my_open_prs(
-        set(args.owner), allowed, args.active_days, set(args.skip_repo)
+        set(args.owner), allowed, scan_days, set(args.skip_repo)
     ):
         stats.scanned += 1
         try:
@@ -1127,7 +1151,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=14,
         metavar="N",
-        help="Only watch PRs updated within the last N days (0 = no limit). Default: 14.",
+        help=(
+            "Only watch PRs updated within the last N days (0 = no limit). "
+            "Widened automatically when --nudge-weekdays needs a longer window, "
+            "so the nudge is never silently unreachable. Default: 14."
+        ),
     )
     parser.add_argument(
         "--nudge-weekdays",

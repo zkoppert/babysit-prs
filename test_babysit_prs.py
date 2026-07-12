@@ -338,6 +338,31 @@ def test_search_filters_allowed_and_skip() -> None:
     assert ("zkoppert/a", 1) in skipped
 
 
+def test_scan_window_widens_to_keep_nudge_reachable() -> None:
+    # A window narrower than the nudge's weekday span (weekends included) would
+    # drop every nudge-eligible PR before it was fetched, so it is widened.
+    assert bp._scan_window_days(1, 3) == 14  # too small -> covers 3 weekdays
+    assert bp._scan_window_days(14, 15) == 28  # big nudge -> even wider window
+    # Left alone when already wide enough, disabled, or unbounded.
+    assert bp._scan_window_days(14, 3) == 14  # defaults unchanged
+    assert bp._scan_window_days(30, 3) == 30  # explicit larger window kept
+    assert bp._scan_window_days(1, 0) == 1  # nudge disabled, no widening
+    assert bp._scan_window_days(0, 3) == 0  # no limit stays no limit
+
+
+def test_run_widens_scan_window_for_nudge(tmp_path: Path) -> None:
+    # run() must pass the widened window to the search, not the raw --active-days.
+    with mock.patch.multiple(
+        bp,
+        get_my_login=mock.DEFAULT,
+        search_my_open_prs=mock.DEFAULT,
+    ) as m:
+        m["get_my_login"].return_value = ME
+        m["search_my_open_prs"].return_value = []
+        bp.run(_args(tmp_path, active_days=1, nudge_weekdays=3))
+    assert m["search_my_open_prs"].call_args.args[2] == 14
+
+
 # ---------------------------------------------------------------------------
 # classify decision tree
 # ---------------------------------------------------------------------------

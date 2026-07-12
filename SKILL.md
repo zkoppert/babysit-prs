@@ -17,17 +17,22 @@ Use whenever the user asks any of:
 
 ## What it does
 
-For each of the user's recently-active open PRs (bounded by `--active-days`,
-default 14; optionally limited to specific owners via `--owner`), it re-runs
-failed **required** checks once per head commit, updates the branch when the
-base is strict and the PR is cleanly behind, and sends one macOS notification
-per PR when a human is needed: merge conflicts, changes requested, a new human
-review comment (bots and the Copilot reviewer excluded), a failed branch
-update, a required check still failing after the retry, or a non-draft PR that
-is green and ready to merge.
+For each of the user's recently-active open PRs (the union of PRs they
+authored and PRs assigned to them, bounded by `--active-days`, default 14;
+optionally limited to specific owners via `--owner`), it re-runs failed
+**required** checks once per head commit, updates the branch when the base is
+strict and the PR is cleanly behind, and sends one macOS notification per PR
+when a human is needed: merge conflicts, changes requested, a new review
+comment (including the Copilot reviewer's; noisy bots like CI and Dependabot
+excluded), a failed branch update, a required check still failing after the
+retry, a non-draft PR that is green and ready to merge, or an authored PR that
+has sat ready with no activity for `--nudge-weekdays` weekdays (default 3) and
+needs a reviewer nudge.
 
-Guardrails: only required checks are re-run, and a branch is only updated when
-the base is strict and cleanly behind. Anything ambiguous is left for the user.
+Guardrails: auto-actions (re-running checks, updating the branch) apply only to
+PRs the user authored; PRs they are merely assigned to are alert-only. Only
+required checks are re-run, and a branch is only updated when the base is strict
+and cleanly behind. Anything ambiguous is left for the user.
 
 ## How to run
 
@@ -40,6 +45,9 @@ python3 babysit_prs.py
 
 # Limited to specific owners.
 python3 babysit_prs.py --owner my-org --owner my-other-org
+
+# Change the reviewer-nudge threshold (0 disables it).
+python3 babysit_prs.py --nudge-weekdays 5
 ```
 
 ## After running
@@ -56,6 +64,8 @@ python3 babysit_prs.py --owner my-org --owner my-other-org
   set. When the required set is unknown, do nothing on CI.
 - Do not update a branch unless the base requires up-to-date branches and the
   branch is cleanly behind. Never auto-resolve merge conflicts.
-- Do not act on other people's PRs. The scan is scoped to `--author=@me`.
-- Do not draft replies to the Copilot reviewer's comments; it cannot respond,
-  and its activity is excluded from the new-comment alert.
+- Do not act on PRs the user did not author. Auto-actions are author-only; PRs
+  they are merely assigned to are alert-only.
+- The Copilot reviewer's comments DO trigger a notification (they are
+  actionable), but do not draft replies to them expecting a response; the
+  Copilot reviewer cannot respond. Act on the feedback directly instead.

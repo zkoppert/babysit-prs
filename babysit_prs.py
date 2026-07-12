@@ -74,6 +74,11 @@ ALERT_CI_STILL_FAILING = "ci-failing"
 ALERT_UPDATE_FAILED = "update-failed"
 ALERT_NEW_COMMENT = "new-comment"
 ALERT_READY = "ready-to-merge"
+ALERT_NUDGE_REVIEWERS = "nudge-reviewers"
+
+# Default number of weekdays a ready PR may sit with no updates, reviews, or
+# comments before the tool suggests nudging the reviewers.
+DEFAULT_NUDGE_WEEKDAYS = 3
 
 # Severity order for the notification summary line.
 ALERT_ORDER: tuple[str, ...] = (
@@ -82,6 +87,7 @@ ALERT_ORDER: tuple[str, ...] = (
     ALERT_CI_STILL_FAILING,
     ALERT_UPDATE_FAILED,
     ALERT_NEW_COMMENT,
+    ALERT_NUDGE_REVIEWERS,
     ALERT_READY,
 )
 ALERT_LABELS: dict[str, str] = {
@@ -90,6 +96,7 @@ ALERT_LABELS: dict[str, str] = {
     ALERT_CI_STILL_FAILING: "CI still failing after re-run",
     ALERT_UPDATE_FAILED: "Branch update failed",
     ALERT_NEW_COMMENT: "New review comment",
+    ALERT_NUDGE_REVIEWERS: "Waiting on reviewers, time to nudge",
     ALERT_READY: "Ready to merge",
 }
 
@@ -129,19 +136,41 @@ def search_my_open_prs(
 ) -> list[tuple[str, int]]:
     """Return ``(repo, number)`` for your recently-active open PRs.
 
-    ``owners`` optionally limits the scan to one or more org/user owners;
-    when empty or None, all of your open PRs are considered. ``active_days``
-    bounds the scan to PRs updated within that many days so the loop stays
-    fast even when hundreds of stale PRs are open. ``skip`` drops specific
-    repos (for example a fixture repo whose state must not be mutated) even
-    though the owner is in scope.
+    The result is the union of PRs you authored and PRs assigned to you,
+    deduplicated. ``owners`` optionally limits the scan to one or more
+    org/user owners; when empty or None, all such PRs are considered.
+    ``active_days`` bounds the scan to PRs updated within that many days so
+    the loop stays fast even when hundreds of stale PRs are open. ``skip``
+    drops specific repos (for example a fixture repo whose state must not be
+    mutated) even though the owner is in scope.
     """
     owners = owners or set()
     skip = skip or set()
+    prs: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    # Author and assignee are separate GitHub search qualifiers; combining
+    # them in one query would AND (PRs both authored and assigned), so run
+    # each role separately and union the results.
+    for role in ("--author=@me", "--assignee=@me"):
+        for repo, number in _search_role(role, owners, active_days):
+            key = (repo, number)
+            if key in seen or repo in skip:
+                continue
+            if allowed and repo not in allowed:
+                continue
+            seen.add(key)
+            prs.append(key)
+    return prs
+
+
+def _search_role(
+    role_flag: str, owners: set[str], active_days: int
+) -> list[tuple[str, int]]:
+    """Run one ``gh search prs`` role query and parse ``(repo, number)`` rows."""
     args = [
         "search",
         "prs",
-        "--author=@me",
+        role_flag,
         "--state=open",
         "--json",
         "number,repository",
@@ -156,33 +185,28 @@ def search_my_open_prs(
     try:
         out = run_gh(args, timeout=45)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("search_my_open_prs failed: %s", exc)
+        logger.warning("search (%s) failed: %s", role_flag, exc)
         return []
     try:
         rows = json.loads(out or "[]")
     except json.JSONDecodeError as exc:
-        logger.warning("search_my_open_prs: parse error: %s", exc)
+        logger.warning("search (%s) parse error: %s", role_flag, exc)
         return []
-    prs: list[tuple[str, int]] = []
+    parsed: list[tuple[str, int]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         repo = ((row.get("repository") or {}).get("nameWithOwner") or "").strip()
         number = row.get("number")
-        if not repo or not isinstance(number, int):
-            continue
-        if repo in skip:
-            continue
-        if allowed and repo not in allowed:
-            continue
-        prs.append((repo, number))
-    return prs
+        if repo and isinstance(number, int):
+            parsed.append((repo, number))
+    return parsed
 
 
 PR_FIELDS = (
     "number,title,url,state,isDraft,mergeable,mergeStateStatus,"
     "headRefOid,baseRefName,reviewDecision,statusCheckRollup,"
-    "latestReviews,comments"
+    "latestReviews,comments,author,updatedAt"
 )
 
 
@@ -365,6 +389,15 @@ def _is_bot(login: str) -> bool:
     return lowered.endswith("[bot]") or lowered in {"copilot", "github-actions"}
 
 
+def _is_copilot_reviewer(login: str) -> bool:
+    """Return True for the Copilot code-review bot.
+
+    Its review comments are actionable feedback, so they count as
+    notify-worthy activity even though it is technically a bot.
+    """
+    return "copilot" in login.lower()
+
+
 def check_name(entry: dict[str, Any]) -> str:
     """Return the check name (CheckRun) or context (StatusContext)."""
     return (entry.get("name") or entry.get("context") or "").strip()
@@ -384,6 +417,19 @@ def check_is_failed(entry: dict[str, Any]) -> bool:
             return False
         return (entry.get("conclusion") or "").upper() in FAILURE_CONCLUSIONS
     return (entry.get("state") or "").upper() in FAILURE_STATES
+
+
+def _has_failing_check(pr: dict[str, Any]) -> bool:
+    """Return True when any visible rollup check has failed.
+
+    Unlike ``required_check_status`` this ignores the required-check set, so it
+    still sees red CI when branch protection is unreadable. Used only to
+    suppress the reviewer nudge in that blind spot.
+    """
+    return any(
+        isinstance(entry, dict) and check_is_failed(entry)
+        for entry in pr.get("statusCheckRollup") or []
+    )
 
 
 def required_check_status(
@@ -437,13 +483,13 @@ def rerunnable_run_ids(entries: list[dict[str, Any]]) -> list[int]:
 
 
 def latest_human_activity(pr: dict[str, Any], my_login: str) -> str | None:
-    """Return the newest ISO timestamp of a human review or comment.
+    """Return the newest ISO timestamp of notify-worthy review activity.
 
     Covers submitted reviews (``latestReviews``), conversation comments
     (``comments``), and inline review-thread replies (``reviewComments``,
-    populated by the caller). Excludes your own activity, bots, and the
-    Copilot reviewer, so the Copilot bot never registers as needing a
-    reply.
+    populated by the caller). Excludes your own activity and noisy bots (CI,
+    Dependabot), but the Copilot code reviewer counts, since its comments are
+    actionable feedback worth a notification.
     """
     stamps: list[str] = []
     for review in pr.get("latestReviews") or []:
@@ -461,10 +507,44 @@ def latest_human_activity(pr: dict[str, Any], my_login: str) -> str | None:
 
 def _human_stamp(item: dict[str, Any], my_login: str, key: str) -> str | None:
     login = (item.get("author") or {}).get("login") or ""
-    if not login or login == my_login or _is_bot(login):
+    if not login or login == my_login:
+        return None
+    # Exclude noisy bots, but keep the Copilot reviewer (actionable feedback).
+    if _is_bot(login) and not _is_copilot_reviewer(login):
         return None
     when = item.get(key)
     return when if isinstance(when, str) and when else None
+
+
+def _parse_iso(ts: str) -> datetime.datetime | None:
+    """Parse a GitHub ISO-8601 timestamp (``...Z``) to an aware datetime."""
+    try:
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def weekdays_since(ts: str, now: datetime.datetime) -> int:
+    """Count weekday (Mon-Fri) dates elapsed since ``ts`` up to ``now``.
+
+    Works at date granularity in ``now``'s timezone (production passes a
+    local-aware ``now``; tests pass UTC for determinism). Weekends are not
+    counted; public holidays are not modeled. Returns 0 when ``ts`` is
+    unparseable or in the future, so a missing timestamp never nudges.
+    """
+    start = _parse_iso(ts)
+    if start is None:
+        return 0
+    tz = now.tzinfo or datetime.timezone.utc
+    start_date = start.astimezone(tz).date()
+    end_date = now.astimezone(tz).date()
+    count = 0
+    day = start_date + datetime.timedelta(days=1)
+    while day <= end_date:
+        if day.weekday() < 5:
+            count += 1
+        day += datetime.timedelta(days=1)
+    return count
 
 
 @dataclass
@@ -483,64 +563,147 @@ def classify(
     required: RequiredChecks,
     my_login: str,
     prior: dict[str, Any],
+    now: datetime.datetime | None = None,
+    nudge_weekdays: int = DEFAULT_NUDGE_WEEKDAYS,
 ) -> Decision:
     """Decide alerts and auto-actions for one PR (pure, no side effects).
 
-    State transitions (advancing ``rerun_head`` / ``update_head`` /
-    ``last_activity`` / ``notified_sig``) are the caller's job and depend
-    on whether the actions and the notification actually succeed.
+    Auto-actions (re-running checks, updating the branch) apply only to PRs
+    you authored; PRs you are merely assigned to are alert-only. State
+    transitions (advancing ``rerun_head`` / ``update_head`` /
+    ``last_activity`` / ``notified_sig``) are the caller's job and depend on
+    whether the actions and the notification actually succeed.
+    """
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    decision = Decision()
+    authored = ((pr.get("author") or {}).get("login") or "") == my_login
+    required_pending = _classify_actions(pr, required, prior, authored, decision)
+    _classify_alerts(pr, my_login, prior, decision)
+    if not _nudge_blocked(pr, required, decision, required_pending):
+        _classify_nudge(pr, now, nudge_weekdays, authored, decision)
+    return decision
+
+
+def _classify_actions(
+    pr: dict[str, Any],
+    required: RequiredChecks,
+    prior: dict[str, Any],
+    authored: bool,
+    decision: Decision,
+) -> bool:
+    """Set auto-actions (update branch, re-run CI). Returns required_pending.
+
+    A cleanly-behind branch on a strict base is refreshed first; that creates
+    a new head and re-runs CI, so old-head CI work is skipped for that cycle.
+    Both auto-actions are gated on authorship (only touch my own branches).
     """
     head = pr.get("headRefOid") or ""
     mss = (pr.get("mergeStateStatus") or "").upper()
-    review_decision = (pr.get("reviewDecision") or "").upper()
-    is_draft = bool(pr.get("isDraft"))
-    mergeable = (pr.get("mergeable") or "").upper()
-
-    decision = Decision()
-
-    # A cleanly-behind branch on a strict base is refreshed first; that
-    # creates a new head and re-runs CI, so we skip old-head CI work this
-    # cycle rather than re-running checks that are about to be obsolete.
+    failed_entries, required_pending = required_check_status(pr, required)
     behind = mss == "BEHIND" and required.known and required.strict
-    if behind and prior.get("update_head", "") != head:
+    if authored and behind and prior.get("update_head", "") != head:
         decision.do_update_branch = True
+    # Only skip CI classification when we are actually updating the branch; an
+    # assigned (or already-updated) behind PR still surfaces failing CI.
+    if not decision.do_update_branch:
+        _classify_ci(failed_entries, required_pending, head, prior, decision, authored)
+    return required_pending
 
-    if not behind:
-        _classify_ci(pr, required, head, prior, decision)
 
-    if mss == "DIRTY" or mergeable == "CONFLICTING":
+def _classify_alerts(
+    pr: dict[str, Any],
+    my_login: str,
+    prior: dict[str, Any],
+    decision: Decision,
+) -> None:
+    """Append the human-needed alerts: conflicts, changes, new comment, ready."""
+    mss = (pr.get("mergeStateStatus") or "").upper()
+    if mss == "DIRTY" or (pr.get("mergeable") or "").upper() == "CONFLICTING":
         decision.alerts.append(ALERT_CONFLICTS)
-
-    if review_decision == "CHANGES_REQUESTED":
+    if (pr.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED":
         decision.alerts.append(ALERT_CHANGES_REQUESTED)
-
     activity = latest_human_activity(pr, my_login)
     decision.current_activity = activity
     if activity and activity != prior.get("last_activity", ""):
         decision.alerts.append(ALERT_NEW_COMMENT)
-
-    if not is_draft and mss == "CLEAN":
+    if not bool(pr.get("isDraft")) and mss == "CLEAN":
         decision.alerts.append(ALERT_READY)
 
-    return decision
+
+def _nudge_blocked(
+    pr: dict[str, Any],
+    required: RequiredChecks,
+    decision: Decision,
+    required_pending: bool,
+) -> bool:
+    """Return True when the reviewers are not the blocker, so no nudge.
+
+    Blocked when an auto-action was just scheduled, CI is pending or failing,
+    the PR is conflicted or has requested changes, it is already approved (then
+    it is mine to merge), or it is ready to merge. When the required-check set
+    is unreadable we cannot tell whether a red check is blocking, so we fall
+    back to the raw rollup and keep the ball on the author rather than nudging
+    reviewers about a PR that may be failing.
+    """
+    if decision.do_rerun or decision.do_update_branch or required_pending:
+        return True
+    if not required.known and _has_failing_check(pr):
+        return True
+    if (pr.get("reviewDecision") or "").upper() == "APPROVED":
+        return True
+    blocking = {
+        ALERT_CONFLICTS,
+        ALERT_CHANGES_REQUESTED,
+        ALERT_CI_STILL_FAILING,
+        ALERT_READY,
+    }
+    return bool(blocking.intersection(decision.alerts))
+
+
+def _classify_nudge(
+    pr: dict[str, Any],
+    now: datetime.datetime,
+    nudge_weekdays: int,
+    authored: bool,
+    decision: Decision,
+) -> None:
+    """Flag an authored, non-draft PR that has sat ready idle long enough.
+
+    The "ball is on the reviewers" guard lives in ``_nudge_blocked``; this
+    only adds the time-based condition.
+    """
+    if not authored or bool(pr.get("isDraft")) or nudge_weekdays <= 0:
+        return
+    updated = pr.get("updatedAt")
+    if not isinstance(updated, str) or not updated:
+        return
+    if weekdays_since(updated, now) >= nudge_weekdays:
+        decision.alerts.append(ALERT_NUDGE_REVIEWERS)
 
 
 def _classify_ci(
-    pr: dict[str, Any],
-    required: RequiredChecks,
+    failed_entries: list[dict[str, Any]],
+    required_pending: bool,
     head: str,
     prior: dict[str, Any],
     decision: Decision,
+    authored: bool,
 ) -> None:
-    """Decide the CI action/alert for a PR that is not being refreshed."""
-    failed_entries, required_pending = required_check_status(pr, required)
+    """Decide the CI action/alert for a PR that is not being refreshed.
+
+    Authored PRs get one re-run per head commit, then alert if still red.
+    Assigned-but-not-authored PRs are alert-only: a failed required check is
+    surfaced immediately without re-running someone else's workflow.
+    """
     if not failed_entries or required_pending:
         return
     run_ids = rerunnable_run_ids(failed_entries)
     already_reran = prior.get("rerun_head", "") == head
-    if already_reran or not run_ids:
-        # Either we already re-ran this head and it is still red, or the
-        # failed required check is an external status we cannot re-run.
+    if not authored or already_reran or not run_ids:
+        # Not my branch to re-run, or we already re-ran this head and it is
+        # still red, or the failed required check is an external status we
+        # cannot re-run.
         decision.alerts.append(ALERT_CI_STILL_FAILING)
     else:
         decision.do_rerun = True
@@ -550,12 +713,14 @@ def _classify_ci(
 def signature(alerts: list[str]) -> str:
     """Stable de-dup key for the persistent alerts on a PR.
 
-    The transient ``new-comment`` event is excluded here and de-duped
-    separately (via ``last_activity``), so that it firing once and then
-    dropping off does not change the persistent signature and cause a
-    spurious re-notify.
+    The event-like alerts ``new-comment`` and ``nudge-reviewers`` are excluded
+    here and de-duped separately (by ``last_activity`` and ``nudged_at``), so
+    that they firing once and then dropping off does not change the persistent
+    signature and cause a spurious re-notify. Excluding the nudge also lets it
+    re-fire after real activity resets the PR, rather than being a one-shot.
     """
-    return "|".join(sorted(a for a in alerts if a != ALERT_NEW_COMMENT))
+    event_like = {ALERT_NEW_COMMENT, ALERT_NUDGE_REVIEWERS}
+    return "|".join(sorted(a for a in alerts if a not in event_like))
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +905,8 @@ class RunContext:
     dry_run: bool
     no_notify: bool
     state: dict[str, dict[str, Any]]
+    now: datetime.datetime
+    nudge_weekdays: int = DEFAULT_NUDGE_WEEKDAYS
     required_cache: dict[str, RequiredChecks] = field(default_factory=dict)
 
     @property
@@ -787,6 +954,8 @@ def _run_locked(args: argparse.Namespace, stats: BabysitStats) -> None:
         dry_run=args.dry_run,
         no_notify=args.no_notify,
         state=load_state(args.state_file),
+        now=datetime.datetime.now().astimezone(),
+        nudge_weekdays=args.nudge_weekdays,
     )
     allowed = set(args.allowed_repo)
 
@@ -829,13 +998,14 @@ def _process_pr(
     pr_url = pr.get("url") or f"https://github.com/{repo}/pull/{number}"
     prior = ctx.state.get(pr_url, {})
     pr["reviewComments"] = fetch_review_comments(repo, number)
-    decision = classify(pr, required, ctx.my_login, prior)
+    decision = classify(pr, required, ctx.my_login, prior, ctx.now, ctx.nudge_weekdays)
 
     new_state = {
         "rerun_head": prior.get("rerun_head", ""),
         "update_head": prior.get("update_head", ""),
         "last_activity": prior.get("last_activity", ""),
         "notified_sig": prior.get("notified_sig", ""),
+        "nudged_at": prior.get("nudged_at", ""),
     }
     head = pr.get("headRefOid") or ""
 
@@ -856,25 +1026,48 @@ def _process_pr(
         else:
             decision.alerts.append(ALERT_UPDATE_FAILED)
 
+    _decide_notify(pr, pr_url, f"{repo}#{number}", decision, ctx, stats, new_state)
+    ctx.state[pr_url] = new_state
+
+
+def _decide_notify(
+    pr: dict[str, Any],
+    pr_url: str,
+    title: str,
+    decision: Decision,
+    ctx: RunContext,
+    stats: BabysitStats,
+    new_state: dict[str, Any],
+) -> None:
+    """Notify once if the PR's state changed, and advance the de-dup state.
+
+    The nudge is event-like: notify once per idle episode, keyed on the
+    ``updatedAt`` it fired at, so a fresh idle period (new ``updatedAt``)
+    re-fires but a standing nudge stays quiet every run.
+    """
     sig = signature(decision.alerts)
-    should_notify = (
-        bool(sig) and sig != new_state["notified_sig"]
-    ) or ALERT_NEW_COMMENT in decision.alerts
-    delivered = (
-        _emit(f"{repo}#{number}", decision, pr_url, ctx, stats)
-        if should_notify
-        else False
+    updated_at = pr.get("updatedAt") or ""
+    nudge_event = (
+        ALERT_NUDGE_REVIEWERS in decision.alerts
+        and updated_at != new_state["nudged_at"]
     )
+    should_notify = (
+        (bool(sig) and sig != new_state["notified_sig"])
+        or ALERT_NEW_COMMENT in decision.alerts
+        or nudge_event
+    )
+    delivered = _emit(title, decision, pr_url, ctx, stats) if should_notify else False
 
     if not (should_notify and not delivered):
         # Nothing to notify, or notified successfully: advance de-dup.
-        # Preserve a previously-notified persistent signature when the
-        # current one is empty, so an alert that transiently disappears
-        # and reappears on the same commit is not re-notified.
+        # Preserve a previously-notified persistent signature when the current
+        # one is empty, so an alert that transiently disappears and reappears
+        # on the same commit is not re-notified.
         new_state["notified_sig"] = sig or new_state["notified_sig"]
         if decision.current_activity:
             new_state["last_activity"] = decision.current_activity
-    ctx.state[pr_url] = new_state
+        if ALERT_NUDGE_REVIEWERS in decision.alerts:
+            new_state["nudged_at"] = updated_at
 
 
 def _emit(
@@ -935,6 +1128,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=14,
         metavar="N",
         help="Only watch PRs updated within the last N days (0 = no limit). Default: 14.",
+    )
+    parser.add_argument(
+        "--nudge-weekdays",
+        type=int,
+        default=DEFAULT_NUDGE_WEEKDAYS,
+        metavar="N",
+        help=(
+            "Nudge reviewers on an authored PR idle this many weekdays "
+            "(0 disables). Default: 3."
+        ),
     )
     parser.add_argument(
         "--allowed-repo",

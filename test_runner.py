@@ -145,7 +145,7 @@ def test_run_routes_preview_repo_to_preview_target(tmp_path: Path) -> None:
         notify=mock.DEFAULT,
     ) as m:
         m["get_my_login"].return_value = ME
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
+        m["search_my_open_prs"].return_value = [("O/R", 1)]
         m["fetch_pr"].return_value = pr
         m["fetch_required_checks"].return_value = REQUIRED
         m["deploy_review_lab"].return_value = True

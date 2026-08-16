@@ -28,9 +28,9 @@ def test_parse_args_review_environment_repos_are_targeted() -> None:
     args = babysit_prs.parse_args(
         [
             "--review-lab-repo",
-            "example/repo",
+            "Example/Repo",
             "--preview-repo",
-            "example/ui",
+            "Example/UI",
         ]
     )
     assert args.review_lab_repo == ["example/repo"]
@@ -40,7 +40,7 @@ def test_parse_args_review_environment_repos_are_targeted() -> None:
         babysit_prs.parse_args(
             [
                 "--review-lab-repo",
-                "example/repo",
+                "Example/Repo",
                 "--preview-repo",
                 "example/repo",
             ]

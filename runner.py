@@ -143,6 +143,7 @@ def _run_locked(args: argparse.Namespace, stats: BabysitStats) -> None:
     ):
         stats.scanned += 1
         try:
+            repo_key = repo.casefold()
             pr = fetch_pr(repo, number)
             if pr is None:
                 continue
@@ -154,8 +155,8 @@ def _run_locked(args: argparse.Namespace, stats: BabysitStats) -> None:
                 stats,
                 review_env_target=(
                     "review-lab"
-                    if repo in review_lab_repos
-                    else "preview" if repo in preview_repos else None
+                    if repo_key in review_lab_repos
+                    else "preview" if repo_key in preview_repos else None
                 ),
             )
         except (

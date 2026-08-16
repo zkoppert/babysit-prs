@@ -144,6 +144,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable debug logging.",
     )
     args = parser.parse_args(argv)
+    args.review_lab_repo = [repo.casefold() for repo in args.review_lab_repo]
+    args.preview_repo = [repo.casefold() for repo in args.preview_repo]
     overlap = set(args.review_lab_repo) & set(args.preview_repo)
     if overlap:
         parser.error(

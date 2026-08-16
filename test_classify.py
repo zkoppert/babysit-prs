@@ -158,6 +158,16 @@ def test_review_lab_deploys_approved_green_authored_pr_once_per_head() -> None:
     )
     assert second.do_review_lab_deploy is False
 
+    failed = classify.classify(
+        pr,
+        REQUIRED,
+        ME,
+        {"deploy_head": HEAD, "deploy_failed_head": HEAD},
+        review_lab_enabled=True,
+    )
+    assert failed.do_review_lab_deploy is False
+    assert constants.ALERT_DEPLOY_FAILED in failed.alerts
+
 
 def test_review_lab_deploy_requires_opt_in_authorship_approval_and_green_ci() -> None:
     approved = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")

@@ -17,6 +17,7 @@ from constants import (
     ALERT_CHANGES_REQUESTED,
     ALERT_CI_STILL_FAILING,
     ALERT_CONFLICTS,
+    ALERT_DEPLOY_FAILED,
     ALERT_NEW_COMMENT,
     ALERT_NUDGE_REVIEWERS,
     ALERT_READY,
@@ -84,6 +85,9 @@ def _classify_review_lab(
     if not required.known or failed_entries or required_pending:
         return
     head = pr.get("headRefOid") or ""
+    if head and prior.get("deploy_failed_head", "") == head:
+        decision.alerts.append(ALERT_DEPLOY_FAILED)
+        return
     if head and prior.get("deploy_head", "") != head:
         decision.do_review_lab_deploy = True
 

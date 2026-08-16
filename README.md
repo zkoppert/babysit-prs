@@ -126,10 +126,11 @@ Invoke the wrapper (see [`examples/babysit-prs`](examples/babysit-prs)) rather t
 
 ## How de-duping works
 
-State lives in a small JSON file mapping each PR URL to `{rerun_head, update_head, deploy_head, last_activity, notified_sig}`:
+State lives in a small JSON file mapping each PR URL to `{rerun_head, update_head, deploy_head, deploy_failed_head, last_activity, notified_sig}`:
 
 - `rerun_head` / `update_head`: the head commit a re-run or branch update was last attempted for, so each is tried once per commit.
 - `deploy_head`: the head commit last sent to a review environment, so approval polling cannot submit the same commit twice.
+- `deploy_failed_head`: the failed deployment head, so its notification retries until delivery without submitting the deployment again.
 - `last_activity`: the newest human review or comment timestamp seen, for new-comment detection.
 - `notified_sig`: the persistent alert signature last notified, so an unchanged state stays quiet and an alert that transiently disappears and reappears on the same commit is not re-notified.
 

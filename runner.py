@@ -205,6 +205,7 @@ def _process_pr(
         "rerun_head": prior.get("rerun_head", ""),
         "update_head": prior.get("update_head", ""),
         "deploy_head": prior.get("deploy_head", ""),
+        "deploy_failed_head": prior.get("deploy_failed_head", ""),
         "last_activity": prior.get("last_activity", ""),
         "notified_sig": prior.get("notified_sig", ""),
         "nudged_at": prior.get("nudged_at", ""),
@@ -230,9 +231,11 @@ def _process_pr(
     if decision.do_review_lab_deploy:
         if deploy_review_lab(pr_url, review_env_target or "", dry_run=ctx.dry_run):
             new_state["deploy_head"] = head
+            new_state["deploy_failed_head"] = ""
             stats.deployed += 1
         else:
             new_state["deploy_head"] = head
+            new_state["deploy_failed_head"] = head
             decision.alerts.append(ALERT_DEPLOY_FAILED)
 
     _decide_notify(pr, pr_url, f"{repo}#{number}", decision, ctx, stats, new_state)

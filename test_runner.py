@@ -115,6 +115,7 @@ def test_run_deploys_opted_in_approved_green_pr_once(tmp_path: Path) -> None:
         assert stats.deployed == 1
     saved = json.loads((tmp_path / "state.json").read_text())
     assert saved[pr["url"]]["deploy_head"] == HEAD
+    assert saved[pr["url"]]["deploy_failed_head"] == ""
 
     with mock.patch.multiple(
         runner,
@@ -131,6 +132,32 @@ def test_run_deploys_opted_in_approved_green_pr_once(tmp_path: Path) -> None:
         m["fetch_required_checks"].return_value = REQUIRED
         runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
         m["deploy_review_lab"].assert_not_called()
+
+
+def test_run_retries_deploy_failure_notification(tmp_path: Path) -> None:
+    pr = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
+    with mock.patch.multiple(
+        runner,
+        get_my_login=mock.DEFAULT,
+        search_my_open_prs=mock.DEFAULT,
+        fetch_pr=mock.DEFAULT,
+        fetch_required_checks=mock.DEFAULT,
+        deploy_review_lab=mock.DEFAULT,
+        notify=mock.DEFAULT,
+    ) as m:
+        m["get_my_login"].return_value = ME
+        m["search_my_open_prs"].return_value = [("o/r", 1)]
+        m["fetch_pr"].return_value = pr
+        m["fetch_required_checks"].return_value = REQUIRED
+        m["deploy_review_lab"].return_value = False
+        m["notify"].side_effect = [False, True]
+
+        runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
+        runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
+
+        m["deploy_review_lab"].assert_called_once()
+        assert m["notify"].call_count == 2
+        assert "Review lab deploy failed" in m["notify"].call_args.args[1]
 
 
 def test_run_routes_preview_repo_to_preview_target(tmp_path: Path) -> None:
@@ -176,6 +203,7 @@ def test_run_review_lab_failure_alerts_and_stops_retrying(tmp_path: Path) -> Non
         assert "Review lab deploy failed" in m["notify"].call_args.args[1]
     saved = json.loads((tmp_path / "state.json").read_text())
     assert saved[pr["url"]]["deploy_head"] == HEAD
+    assert saved[pr["url"]]["deploy_failed_head"] == HEAD
 
 
 def test_run_rerun_failure_alerts_and_stops_retrying(tmp_path: Path) -> None:

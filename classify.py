@@ -17,6 +17,7 @@ from constants import (
     ALERT_CHANGES_REQUESTED,
     ALERT_CI_STILL_FAILING,
     ALERT_CONFLICTS,
+    ALERT_DEPLOY_FAILED,
     ALERT_NEW_COMMENT,
     ALERT_NUDGE_REVIEWERS,
     ALERT_READY,
@@ -32,6 +33,7 @@ class Decision:
     do_rerun: bool = False
     rerun_run_ids: list[int] = field(default_factory=list)
     do_update_branch: bool = False
+    do_review_lab_deploy: bool = False
     current_activity: str | None = None
 
 
@@ -42,6 +44,7 @@ def classify(
     prior: dict[str, Any],
     now: datetime.datetime | None = None,
     nudge_weekdays: int = DEFAULT_NUDGE_WEEKDAYS,
+    review_lab_enabled: bool = False,
 ) -> Decision:
     """Decide alerts and auto-actions for one PR (pure, no side effects).
 
@@ -56,10 +59,37 @@ def classify(
     decision = Decision()
     authored = ((pr.get("author") or {}).get("login") or "") == my_login
     required_pending = _classify_actions(pr, required, prior, authored, decision)
+    _classify_review_lab(pr, required, prior, authored, review_lab_enabled, decision)
     _classify_alerts(pr, my_login, prior, decision)
     if not _nudge_blocked(pr, required, decision, required_pending):
         _classify_nudge(pr, now, nudge_weekdays, authored, decision)
     return decision
+
+
+def _classify_review_lab(
+    pr: dict[str, Any],
+    required: RequiredChecks,
+    prior: dict[str, Any],
+    authored: bool,
+    enabled: bool,
+    decision: Decision,
+) -> None:
+    """Deploy an approved, green authored PR once per head commit."""
+    if not enabled or not authored or bool(pr.get("isDraft")):
+        return
+    if (pr.get("reviewDecision") or "").upper() != "APPROVED":
+        return
+    if (pr.get("mergeStateStatus") or "").upper() != "CLEAN":
+        return
+    failed_entries, required_pending = required_check_status(pr, required)
+    if not required.known or failed_entries or required_pending:
+        return
+    head = pr.get("headRefOid") or ""
+    if head and prior.get("deploy_failed_head", "") == head:
+        decision.alerts.append(ALERT_DEPLOY_FAILED)
+        return
+    if head and prior.get("deploy_head", "") != head:
+        decision.do_review_lab_deploy = True
 
 
 def _classify_actions(

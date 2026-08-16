@@ -13,6 +13,7 @@ from checks import RequiredChecks, fetch_required_checks
 from classify import Decision, classify
 from constants import (
     ALERT_CI_STILL_FAILING,
+    ALERT_DEPLOY_FAILED,
     ALERT_LABELS,
     ALERT_ORDER,
     ALERT_UPDATE_FAILED,
@@ -22,18 +23,14 @@ from constants import (
 from dedup import advance_dedup_state, should_notify
 from effects import (
     acquire_lock,
+    deploy_review_lab,
     load_state,
     notify,
     rerun_runs,
     save_state,
     update_branch,
 )
-from ghapi import (
-    fetch_pr,
-    fetch_review_comments,
-    get_my_login,
-    search_my_open_prs,
-)
+from ghapi import fetch_pr, fetch_review_comments, get_my_login, search_my_open_prs
 
 
 def _scan_window_days(active_days: int, nudge_weekdays: int) -> int:
@@ -59,6 +56,7 @@ class BabysitStats:
     scanned: int = 0
     reran: int = 0
     updated: int = 0
+    deployed: int = 0
     notified: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -129,6 +127,8 @@ def _run_locked(args: argparse.Namespace, stats: BabysitStats) -> None:
         nudge_weekdays=args.nudge_weekdays,
     )
     allowed = set(args.allowed_repo)
+    review_lab_repos = set(args.review_lab_repo)
+    preview_repos = set(args.preview_repo)
     scan_days = _scan_window_days(args.active_days, args.nudge_weekdays)
     if scan_days != args.active_days:
         logger.debug(
@@ -143,10 +143,22 @@ def _run_locked(args: argparse.Namespace, stats: BabysitStats) -> None:
     ):
         stats.scanned += 1
         try:
+            repo_key = repo.casefold()
             pr = fetch_pr(repo, number)
             if pr is None:
                 continue
-            _process_pr(pr, repo, number, ctx, stats)
+            _process_pr(
+                pr,
+                repo,
+                number,
+                ctx,
+                stats,
+                review_env_target=(
+                    "review-lab"
+                    if repo_key in review_lab_repos
+                    else "preview" if repo_key in preview_repos else None
+                ),
+            )
         except (
             subprocess.SubprocessError,
             OSError,
@@ -171,17 +183,29 @@ def _process_pr(
     number: int,
     ctx: RunContext,
     stats: BabysitStats,
+    *,
+    review_env_target: str | None = None,
 ) -> None:
     """Auto-act on one PR and notify when its state changed."""
     required = ctx.required_for(repo, pr.get("baseRefName") or "")
     pr_url = pr.get("url") or f"https://github.com/{repo}/pull/{number}"
     prior = ctx.state.get(pr_url, {})
     pr["reviewComments"] = fetch_review_comments(repo, number)
-    decision = classify(pr, required, ctx.my_login, prior, ctx.now, ctx.nudge_weekdays)
+    decision = classify(
+        pr,
+        required,
+        ctx.my_login,
+        prior,
+        ctx.now,
+        ctx.nudge_weekdays,
+        review_env_target is not None,
+    )
 
     new_state = {
         "rerun_head": prior.get("rerun_head", ""),
         "update_head": prior.get("update_head", ""),
+        "deploy_head": prior.get("deploy_head", ""),
+        "deploy_failed_head": prior.get("deploy_failed_head", ""),
         "last_activity": prior.get("last_activity", ""),
         "notified_sig": prior.get("notified_sig", ""),
         "nudged_at": prior.get("nudged_at", ""),
@@ -204,6 +228,15 @@ def _process_pr(
             stats.updated += 1
         else:
             decision.alerts.append(ALERT_UPDATE_FAILED)
+    if decision.do_review_lab_deploy:
+        if deploy_review_lab(pr_url, review_env_target or "", dry_run=ctx.dry_run):
+            new_state["deploy_head"] = head
+            new_state["deploy_failed_head"] = ""
+            stats.deployed += 1
+        else:
+            new_state["deploy_head"] = head
+            new_state["deploy_failed_head"] = head
+            decision.alerts.append(ALERT_DEPLOY_FAILED)
 
     _decide_notify(pr, pr_url, f"{repo}#{number}", decision, ctx, stats, new_state)
     ctx.state[pr_url] = new_state

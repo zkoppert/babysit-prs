@@ -148,6 +148,74 @@ def test_classify_ready_only_when_clean_and_not_draft() -> None:
     )
 
 
+def test_review_lab_deploys_approved_green_authored_pr_once_per_head() -> None:
+    pr = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
+    first = classify.classify(pr, REQUIRED, ME, {}, review_lab_enabled=True)
+    assert first.do_review_lab_deploy is True
+
+    second = classify.classify(
+        pr, REQUIRED, ME, {"deploy_head": HEAD}, review_lab_enabled=True
+    )
+    assert second.do_review_lab_deploy is False
+
+    failed = classify.classify(
+        pr,
+        REQUIRED,
+        ME,
+        {"deploy_head": HEAD, "deploy_failed_head": HEAD},
+        review_lab_enabled=True,
+    )
+    assert failed.do_review_lab_deploy is False
+    assert constants.ALERT_DEPLOY_FAILED in failed.alerts
+
+
+def test_review_lab_deploy_requires_opt_in_authorship_approval_and_green_ci() -> None:
+    approved = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
+    assert classify.classify(approved, REQUIRED, ME, {}).do_review_lab_deploy is False
+    assigned = make_pr(
+        reviewDecision="APPROVED",
+        mergeStateStatus="CLEAN",
+        author={"login": "someone-else"},
+    )
+    assert (
+        classify.classify(
+            assigned, REQUIRED, ME, {}, review_lab_enabled=True
+        ).do_review_lab_deploy
+        is False
+    )
+    unapproved = make_pr(reviewDecision="", mergeStateStatus="CLEAN")
+    assert (
+        classify.classify(
+            unapproved, REQUIRED, ME, {}, review_lab_enabled=True
+        ).do_review_lab_deploy
+        is False
+    )
+    blocked = make_pr(reviewDecision="APPROVED", mergeStateStatus="BLOCKED")
+    assert (
+        classify.classify(
+            blocked, REQUIRED, ME, {}, review_lab_enabled=True
+        ).do_review_lab_deploy
+        is False
+    )
+    pending = make_pr(
+        reviewDecision="APPROVED",
+        mergeStateStatus="CLEAN",
+        statusCheckRollup=[check_run("ci", "", "IN_PROGRESS")],
+    )
+    assert (
+        classify.classify(
+            pending, REQUIRED, ME, {}, review_lab_enabled=True
+        ).do_review_lab_deploy
+        is False
+    )
+    assert (
+        classify.classify(
+            approved, UNKNOWN, ME, {}, review_lab_enabled=True
+        ).do_review_lab_deploy
+        is False
+    )
+
+
 # ---------------------------------------------------------------------------
 # authorship gating: assigned-but-not-authored PRs are alert-only
 # ---------------------------------------------------------------------------

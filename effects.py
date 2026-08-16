@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from constants import logger
+from constants import REVIEW_ENV_TARGETS, logger
 from ghapi import run_gh
 
 
@@ -58,6 +58,34 @@ def update_branch(repo: str, number: int, *, dry_run: bool) -> bool:
         return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         logger.warning("update-branch failed for %s#%d: %s", repo, number, exc)
+        return False
+
+
+def deploy_review_lab(pr_url: str, target: str, *, dry_run: bool) -> bool:
+    """Deploy an approved PR to its repository's review environment."""
+    if target not in REVIEW_ENV_TARGETS:
+        logger.warning("unsupported review environment target: %s", target)
+        return False
+    if dry_run:
+        logger.info("[dry-run] would deploy %s to %s", pr_url, target)
+        return True
+    try:
+        run_gh(
+            [
+                "review-lab",
+                "deploy",
+                pr_url,
+                "--target",
+                target,
+                "--wait",
+                "--no-confirm",
+            ],
+            timeout=120,
+        )
+        logger.info("deployed %s to %s", pr_url, target)
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("review lab deploy failed for %s: %s", pr_url, exc)
         return False
 
 

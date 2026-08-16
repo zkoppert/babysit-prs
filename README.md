@@ -78,7 +78,7 @@ babysit_prs.py [--owner OWNER] [--active-days N] [--nudge-weekdays N]
 | `--skip-repo OWNER/REPO` | none | Never act on a repo (for example a fixture). Repeatable. |
 | `--review-lab-repo OWNER/REPO` | none | Deploy approved, green authored PRs in this repo to `review-lab`. Repeatable. |
 | `--preview-repo OWNER/REPO` | none | Deploy approved, green authored PRs in this repo to `preview`. Repeatable. |
-| `--dry-run` | off | Preview only: no re-runs, branch updates, or notifications. |
+| `--dry-run` | off | Preview only: no re-runs, branch updates, review-environment deploys, or notifications. |
 | `--no-notify` | off | Act on checks and branches, but send no notifications. |
 | `--state-file PATH` | `~/Library/Logs/babysit-prs-state.json` | Per-PR de-dup state. |
 | `--verbose` | off | Debug logging. |

@@ -61,7 +61,7 @@ python3 babysit_prs.py --review-lab-repo example-org/backend --preview-repo exam
 
 ## After running
 
-1. Read the printed summary (`scanned=N reran=N updated=N notified=N`).
+1. Read the printed summary (`scanned=N reran=N updated=N deployed=N notified=N`).
 2. Each flagged PR is logged as an `attention owner/repo#N: <reasons> (<url>)`
    line; read those to tell the user which PRs need attention and why.
 3. If `ERROR:` lines appear on stderr, surface them (most commonly an expired

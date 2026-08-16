@@ -8,14 +8,7 @@ import json
 import subprocess
 from unittest import mock
 
-from prfixtures import (
-    REQUIRED,
-    RUN_URL,
-    UNKNOWN,
-    check_run,
-    make_pr,
-    status_context,
-)
+from prfixtures import REQUIRED, RUN_URL, UNKNOWN, check_run, make_pr, status_context
 
 import checks
 

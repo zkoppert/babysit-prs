@@ -58,6 +58,79 @@ def test_update_branch_success_and_failure() -> None:
         gh.assert_not_called()
 
 
+def test_deploy_review_lab_selects_target_and_handles_failure() -> None:
+    with mock.patch.object(effects, "run_gh", return_value="") as gh:
+        assert (
+            effects.deploy_review_lab(
+                "https://example.test/org/repo/pull/1",
+                "review-lab",
+                dry_run=False,
+            )
+            is True
+        )
+        assert gh.call_args.args[0] == [
+            "review-lab",
+            "deploy",
+            "https://example.test/org/repo/pull/1",
+            "--target",
+            "review-lab",
+            "--wait",
+            "--no-confirm",
+        ]
+
+    with mock.patch.object(effects, "run_gh", return_value="") as gh:
+        assert (
+            effects.deploy_review_lab(
+                "https://example.test/org/ui/pull/1",
+                "preview",
+                dry_run=False,
+            )
+            is True
+        )
+        assert gh.call_args.args[0] == [
+            "review-lab",
+            "deploy",
+            "https://example.test/org/ui/pull/1",
+            "--target",
+            "preview",
+            "--wait",
+            "--no-confirm",
+        ]
+
+    with mock.patch.object(
+        effects, "run_gh", side_effect=subprocess.TimeoutExpired("gh", 120)
+    ):
+        assert (
+            effects.deploy_review_lab(
+                "https://example.test/org/repo/pull/1",
+                "review-lab",
+                dry_run=False,
+            )
+            is False
+        )
+
+
+def test_deploy_review_lab_dry_run() -> None:
+    with mock.patch.object(effects, "run_gh") as gh:
+        assert effects.deploy_review_lab(
+            "https://example.test/org/repo/pull/1",
+            "review-lab",
+            dry_run=True,
+        )
+        gh.assert_not_called()
+
+
+def test_deploy_review_lab_rejects_unknown_target() -> None:
+    with mock.patch.object(effects, "run_gh") as gh:
+        assert not effects.deploy_review_lab(
+            "https://example.test/org/repo/pull/1", "unknown", dry_run=True
+        )
+        assert not effects.deploy_review_lab(
+            "https://example.test/org/repo/pull/1", "unknown", dry_run=False
+        )
+        gh.assert_not_called()
+
+
 def test_osa_str_escapes_quotes_and_backslashes() -> None:
     assert effects._osa_str('a"b\\c') == '"a\\"b\\\\c"'
 

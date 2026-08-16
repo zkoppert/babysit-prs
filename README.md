@@ -12,6 +12,7 @@ For each of your recently-active open PRs (those you authored or are assigned to
 
 - **Re-runs failed required checks** once per head commit (`gh run rerun --failed` on the exact Actions runs backing the failed required checks), then notifies you only if they are still red after that retry. This is the flaky-test retry.
 - **Updates the branch** (`gh pr update-branch`) when the base requires up-to-date branches and the PR is cleanly behind, so CI re-runs against the latest base without your involvement.
+- **Deploys approved PRs to a review environment** once per head commit when the repository is explicitly enabled with `--review-lab-repo` or `--preview-repo`. The selected flag determines the target, and configuring both targets for one repository is rejected.
 - **Notifies you** when a PR needs a human: merge conflicts, changes requested, a new review comment (including inline review-thread replies and the Copilot reviewer's comments; noisy bots like CI and Dependabot are excluded), a failed branch update, a required check still failing after the retry, a non-draft PR that is green and ready to merge, or a PR that has sat ready with no activity for several weekdays and needs a reviewer nudge.
 
 ### Whose PRs, and which ones
@@ -24,6 +25,7 @@ The auto-actions are deliberately conservative:
 
 - Only **required** checks are ever re-run, and only on PRs you authored. If the required set cannot be read (you lack admin on the repo, or it uses rulesets you cannot see), CI auto-actions are skipped for that PR rather than guessed at.
 - A branch is only updated when the base is **strict** (requires up-to-date branches) and the PR is cleanly **behind**. Merge conflicts are never auto-resolved; they are surfaced for you.
+- Review environment deploys are disabled by default. They only run for explicitly enabled repositories, authored PRs, and commits that are approved, non-draft, conflict-free, and green on every known required check.
 - Everything ambiguous is left for you.
 
 ### The reviewer nudge
@@ -38,6 +40,7 @@ A per-PR state signature means you are pinged only when a PR's notable state act
 
 - macOS (for notifications). [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) makes notifications clickable (they open the PR); without it, delivery falls back to `osascript` with the URL in the body.
 - The [`gh` CLI](https://cli.github.com/), authenticated with `repo` and `workflow` scopes (`workflow` is needed to re-run checks).
+- Optional review environment support requires the `gh review-lab` command and its local authentication prerequisites. These deploys do not work from Codespaces.
 - Python 3.11 or newer (standard library only, no `pip install` required to run).
 
 ```bash
@@ -62,6 +65,7 @@ python3 ~/repos/babysit-prs/babysit_prs.py --dry-run --verbose
 ```text
 babysit_prs.py [--owner OWNER] [--active-days N] [--nudge-weekdays N]
                [--allowed-repo OWNER/REPO] [--skip-repo OWNER/REPO]
+               [--review-lab-repo OWNER/REPO] [--preview-repo OWNER/REPO]
                [--dry-run] [--no-notify] [--state-file PATH] [--verbose]
 ```
 
@@ -72,6 +76,8 @@ babysit_prs.py [--owner OWNER] [--active-days N] [--nudge-weekdays N]
 | `--nudge-weekdays N` | `3` | Nudge reviewers on an authored PR idle this many weekdays (0 disables). |
 | `--allowed-repo OWNER/REPO` | all | Restrict to specific repos. Repeatable. |
 | `--skip-repo OWNER/REPO` | none | Never act on a repo (for example a fixture). Repeatable. |
+| `--review-lab-repo OWNER/REPO` | none | Deploy approved, green authored PRs in this repo to `review-lab`. Repeatable. |
+| `--preview-repo OWNER/REPO` | none | Deploy approved, green authored PRs in this repo to `preview`. Repeatable. |
 | `--dry-run` | off | Preview only: no re-runs, branch updates, or notifications. |
 | `--no-notify` | off | Act on checks and branches, but send no notifications. |
 | `--state-file PATH` | `~/Library/Logs/babysit-prs-state.json` | Per-PR de-dup state. |
@@ -88,6 +94,11 @@ python3 babysit_prs.py --owner my-org --owner my-other-org --skip-repo my-org/fi
 
 # Nudge reviewers after a full business week of silence instead of three days.
 python3 babysit_prs.py --nudge-weekdays 5
+
+# Deploy approved, green PRs to an explicit environment target.
+python3 babysit_prs.py \
+  --review-lab-repo example-org/backend \
+  --preview-repo example-org/frontend
 ```
 
 ## Run it on a schedule
@@ -115,9 +126,10 @@ Invoke the wrapper (see [`examples/babysit-prs`](examples/babysit-prs)) rather t
 
 ## How de-duping works
 
-State lives in a small JSON file mapping each PR URL to `{rerun_head, update_head, last_activity, notified_sig}`:
+State lives in a small JSON file mapping each PR URL to `{rerun_head, update_head, deploy_head, last_activity, notified_sig}`:
 
 - `rerun_head` / `update_head`: the head commit a re-run or branch update was last attempted for, so each is tried once per commit.
+- `deploy_head`: the head commit last sent to a review environment, so approval polling cannot submit the same commit twice.
 - `last_activity`: the newest human review or comment timestamp seen, for new-comment detection.
 - `notified_sig`: the persistent alert signature last notified, so an unchanged state stays quiet and an alert that transiently disappears and reappears on the same commit is not re-notified.
 

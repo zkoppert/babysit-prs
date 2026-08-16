@@ -67,6 +67,8 @@ def _args(tmp_path: Path, **overrides: Any) -> argparse.Namespace:
         dry_run=False,
         allowed_repo=[],
         skip_repo=[],
+        review_lab_repo=[],
+        preview_repo=[],
         active_days=14,
         nudge_weekdays=3,
         no_notify=False,

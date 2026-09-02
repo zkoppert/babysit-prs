@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from prfixtures import HEAD, ME, REQUIRED, _args, check_run, make_pr
+from prfixtures import HEAD, ME, _args, _patch_run, check_run, make_pr
 
 import effects
 import runner
@@ -39,49 +39,30 @@ def test_run_widens_scan_window_for_nudge(tmp_path: Path) -> None:
     assert m["search_my_open_prs"].call_args.args[2] == 14
 
 
-def test_run_update_priority_skips_rerun(tmp_path: Path) -> None:
+def test_run_behind_branch_reruns_without_updating_branch(tmp_path: Path) -> None:
     pr = make_pr(
         mergeStateStatus="BEHIND", statusCheckRollup=[check_run("ci", "FAILURE")]
     )
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
+    with _patch_run(
+        pr,
         rerun_runs=mock.DEFAULT,
-        update_branch=mock.DEFAULT,
         notify=mock.DEFAULT,
     ) as m:
-        m["get_my_login"].return_value = "zkoppert"
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
-        m["update_branch"].return_value = True
+        m["rerun_runs"].return_value = True
         stats = runner.run(_args(tmp_path))
-        m["update_branch"].assert_called_once()
-        m["rerun_runs"].assert_not_called()
-        assert stats.updated == 1
-        assert stats.reran == 0
+        m["rerun_runs"].assert_called_once()
+        assert stats.reran == 1
 
 
 def test_run_reruns_specific_runs_when_not_behind(tmp_path: Path) -> None:
     pr = make_pr(
         mergeStateStatus="BLOCKED", statusCheckRollup=[check_run("ci", "FAILURE")]
     )
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
+    with _patch_run(
+        pr,
         rerun_runs=mock.DEFAULT,
         notify=mock.DEFAULT,
     ) as m:
-        m["get_my_login"].return_value = "zkoppert"
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
         m["rerun_runs"].return_value = True
         stats = runner.run(_args(tmp_path))
         m["rerun_runs"].assert_called_once()
@@ -91,138 +72,15 @@ def test_run_reruns_specific_runs_when_not_behind(tmp_path: Path) -> None:
     assert saved[pr["url"]]["rerun_head"] == HEAD
 
 
-def test_run_deploys_opted_in_approved_green_pr_once(tmp_path: Path) -> None:
-    pr = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
-        deploy_review_lab=mock.DEFAULT,
-        notify=mock.DEFAULT,
-    ) as m:
-        m["get_my_login"].return_value = ME
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
-        m["deploy_review_lab"].return_value = True
-        m["notify"].return_value = True
-        stats = runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
-        m["deploy_review_lab"].assert_called_once_with(
-            pr["url"], "review-lab", dry_run=False
-        )
-        assert stats.deployed == 1
-    saved = json.loads((tmp_path / "state.json").read_text())
-    assert saved[pr["url"]]["deploy_head"] == HEAD
-    assert saved[pr["url"]]["deploy_failed_head"] == ""
-
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
-        deploy_review_lab=mock.DEFAULT,
-        notify=mock.DEFAULT,
-    ) as m:
-        m["get_my_login"].return_value = ME
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
-        runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
-        m["deploy_review_lab"].assert_not_called()
-
-
-def test_run_retries_deploy_failure_notification(tmp_path: Path) -> None:
-    pr = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
-        deploy_review_lab=mock.DEFAULT,
-        notify=mock.DEFAULT,
-    ) as m:
-        m["get_my_login"].return_value = ME
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
-        m["deploy_review_lab"].return_value = False
-        m["notify"].side_effect = [False, True]
-
-        runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
-        runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
-
-        m["deploy_review_lab"].assert_called_once()
-        assert m["notify"].call_count == 2
-        assert "Review lab deploy failed" in m["notify"].call_args.args[1]
-
-
-def test_run_routes_preview_repo_to_preview_target(tmp_path: Path) -> None:
-    pr = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
-        deploy_review_lab=mock.DEFAULT,
-        notify=mock.DEFAULT,
-    ) as m:
-        m["get_my_login"].return_value = ME
-        m["search_my_open_prs"].return_value = [("O/R", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
-        m["deploy_review_lab"].return_value = True
-        runner.run(_args(tmp_path, preview_repo=["o/r"]))
-        m["deploy_review_lab"].assert_called_once_with(
-            pr["url"], "preview", dry_run=False
-        )
-
-
-def test_run_review_lab_failure_alerts_and_stops_retrying(tmp_path: Path) -> None:
-    pr = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
-        deploy_review_lab=mock.DEFAULT,
-        notify=mock.DEFAULT,
-    ) as m:
-        m["get_my_login"].return_value = ME
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
-        m["deploy_review_lab"].return_value = False
-        m["notify"].return_value = True
-        runner.run(_args(tmp_path, review_lab_repo=["o/r"]))
-        assert "Review lab deploy failed" in m["notify"].call_args.args[1]
-    saved = json.loads((tmp_path / "state.json").read_text())
-    assert saved[pr["url"]]["deploy_head"] == HEAD
-    assert saved[pr["url"]]["deploy_failed_head"] == HEAD
-
-
 def test_run_rerun_failure_alerts_and_stops_retrying(tmp_path: Path) -> None:
     pr = make_pr(
         mergeStateStatus="BLOCKED", statusCheckRollup=[check_run("ci", "FAILURE")]
     )
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
+    with _patch_run(
+        pr,
         rerun_runs=mock.DEFAULT,
         notify=mock.DEFAULT,
     ) as m:
-        m["get_my_login"].return_value = "zkoppert"
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
         m["rerun_runs"].return_value = False  # e.g. missing Actions permission
         m["notify"].return_value = True
         stats = runner.run(_args(tmp_path))
@@ -232,28 +90,6 @@ def test_run_rerun_failure_alerts_and_stops_retrying(tmp_path: Path) -> None:
     # rerun_head advanced so the next run does not retry the doomed re-run forever
     saved = json.loads((tmp_path / "state.json").read_text())
     assert saved[pr["url"]]["rerun_head"] == HEAD
-    pr = make_pr(mergeStateStatus="BEHIND")
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
-        update_branch=mock.DEFAULT,
-        notify=mock.DEFAULT,
-    ) as m:
-        m["get_my_login"].return_value = "zkoppert"
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
-        m["update_branch"].return_value = False
-        m["notify"].return_value = True
-        runner.run(_args(tmp_path))
-        m["notify"].assert_called_once()
-        title, subtitle, url = m["notify"].call_args.args
-        assert title == "o/r#1"
-        assert "Branch update failed" in subtitle
-        assert url == "https://github.com/o/r/pull/1"
 
 
 def test_run_isolates_per_pr_errors(tmp_path: Path) -> None:
@@ -261,23 +97,16 @@ def test_run_isolates_per_pr_errors(tmp_path: Path) -> None:
         number=2, url="https://github.com/o/r/pull/2", mergeStateStatus="CLEAN"
     )
 
-    def fetch(repo: str, number: int) -> dict[str, Any]:
+    def fetch(_repo: str, number: int) -> dict[str, Any]:
         if number == 1:
             raise FileNotFoundError("gh missing")
         return good
 
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
+    with _patch_run(
+        fetch,
+        prs=[("o/r", 1), ("o/r", 2)],
         notify=mock.DEFAULT,
     ) as m:
-        m["get_my_login"].return_value = "zkoppert"
-        m["search_my_open_prs"].return_value = [("o/r", 1), ("o/r", 2)]
-        m["fetch_pr"].side_effect = fetch
-        m["fetch_required_checks"].return_value = REQUIRED
         m["notify"].return_value = True
         stats = runner.run(_args(tmp_path))
         assert stats.scanned == 2
@@ -294,19 +123,11 @@ def test_run_records_error_when_login_fails(tmp_path: Path) -> None:
 
 def test_run_records_save_error(tmp_path: Path) -> None:
     pr = make_pr(mergeStateStatus="CLEAN")
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
+    with _patch_run(
+        pr,
         notify=mock.DEFAULT,
         save_state=mock.DEFAULT,
     ) as m:
-        m["get_my_login"].return_value = "zkoppert"
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
         m["notify"].return_value = True
         m["save_state"].side_effect = OSError("disk full")
         stats = runner.run(_args(tmp_path))
@@ -327,18 +148,10 @@ def test_run_skips_when_locked(tmp_path: Path) -> None:
 
 def test_run_dry_run_skips_state_write(tmp_path: Path) -> None:
     pr = make_pr(mergeStateStatus="CLEAN")
-    with mock.patch.multiple(
-        runner,
-        get_my_login=mock.DEFAULT,
-        search_my_open_prs=mock.DEFAULT,
-        fetch_pr=mock.DEFAULT,
-        fetch_required_checks=mock.DEFAULT,
+    with _patch_run(
+        pr,
         notify=mock.DEFAULT,
     ) as m:
-        m["get_my_login"].return_value = "zkoppert"
-        m["search_my_open_prs"].return_value = [("o/r", 1)]
-        m["fetch_pr"].return_value = pr
-        m["fetch_required_checks"].return_value = REQUIRED
         runner.run(_args(tmp_path, dry_run=True))
         m["notify"].assert_called_once()  # invoked with dry_run=True for the log line
     assert not (tmp_path / "state.json").exists()

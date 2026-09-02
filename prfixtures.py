@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -67,8 +69,6 @@ def _args(tmp_path: Path, **overrides: Any) -> argparse.Namespace:
         dry_run=False,
         allowed_repo=[],
         skip_repo=[],
-        review_lab_repo=[],
-        preview_repo=[],
         active_days=14,
         nudge_weekdays=3,
         no_notify=False,
@@ -79,19 +79,27 @@ def _args(tmp_path: Path, **overrides: Any) -> argparse.Namespace:
     return ns
 
 
+@contextmanager
 def _patch_run(
     pr_or_side: Any, required: checks.RequiredChecks = REQUIRED, **extra: Any
-):
+) -> Iterator[dict[str, Any]]:
     fetch_kwargs = (
         {"side_effect": pr_or_side}
-        if isinstance(pr_or_side, list)
+        if isinstance(pr_or_side, list) or callable(pr_or_side)
         else {"return_value": pr_or_side}
     )
     prs = extra.pop("prs", [("o/r", 1)])
-    patches = [
-        mock.patch.object(runner, "get_my_login", return_value="zkoppert"),
-        mock.patch.object(runner, "search_my_open_prs", return_value=prs),
-        mock.patch.object(runner, "fetch_pr", **fetch_kwargs),
-        mock.patch.object(runner, "fetch_required_checks", return_value=required),
-    ]
-    return patches
+    with mock.patch.multiple(
+        runner,
+        get_my_login=mock.DEFAULT,
+        search_my_open_prs=mock.DEFAULT,
+        fetch_pr=mock.DEFAULT,
+        fetch_required_checks=mock.DEFAULT,
+        **extra,
+    ) as mocks:
+        mocks["get_my_login"].return_value = ME
+        mocks["search_my_open_prs"].return_value = prs
+        for key, value in fetch_kwargs.items():
+            setattr(mocks["fetch_pr"], key, value)
+        mocks["fetch_required_checks"].return_value = required
+        yield mocks

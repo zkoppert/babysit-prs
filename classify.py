@@ -17,7 +17,6 @@ from constants import (
     ALERT_CHANGES_REQUESTED,
     ALERT_CI_STILL_FAILING,
     ALERT_CONFLICTS,
-    ALERT_DEPLOY_FAILED,
     ALERT_NEW_COMMENT,
     ALERT_NUDGE_REVIEWERS,
     ALERT_READY,
@@ -32,8 +31,6 @@ class Decision:
     alerts: list[str] = field(default_factory=list)
     do_rerun: bool = False
     rerun_run_ids: list[int] = field(default_factory=list)
-    do_update_branch: bool = False
-    do_review_lab_deploy: bool = False
     current_activity: str | None = None
 
 
@@ -44,52 +41,23 @@ def classify(
     prior: dict[str, Any],
     now: datetime.datetime | None = None,
     nudge_weekdays: int = DEFAULT_NUDGE_WEEKDAYS,
-    review_lab_enabled: bool = False,
 ) -> Decision:
     """Decide alerts and auto-actions for one PR (pure, no side effects).
 
-    Auto-actions (re-running checks, updating the branch) apply only to PRs
-    you authored; PRs you are merely assigned to are alert-only. State
-    transitions (advancing ``rerun_head`` / ``update_head`` /
+    Re-running checks applies only to PRs you authored; PRs you are merely
+    assigned to are alert-only. State transitions (advancing ``rerun_head`` /
     ``last_activity`` / ``notified_sig``) are the caller's job and depend on
-    whether the actions and the notification actually succeed.
+    whether the action and the notification actually succeed.
     """
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
     decision = Decision()
     authored = ((pr.get("author") or {}).get("login") or "") == my_login
     required_pending = _classify_actions(pr, required, prior, authored, decision)
-    _classify_review_lab(pr, required, prior, authored, review_lab_enabled, decision)
     _classify_alerts(pr, my_login, prior, decision)
     if not _nudge_blocked(pr, required, decision, required_pending):
         _classify_nudge(pr, now, nudge_weekdays, authored, decision)
     return decision
-
-
-def _classify_review_lab(
-    pr: dict[str, Any],
-    required: RequiredChecks,
-    prior: dict[str, Any],
-    authored: bool,
-    enabled: bool,
-    decision: Decision,
-) -> None:
-    """Deploy an approved, green authored PR once per head commit."""
-    if not enabled or not authored or bool(pr.get("isDraft")):
-        return
-    if (pr.get("reviewDecision") or "").upper() != "APPROVED":
-        return
-    if (pr.get("mergeStateStatus") or "").upper() != "CLEAN":
-        return
-    failed_entries, required_pending = required_check_status(pr, required)
-    if not required.known or failed_entries or required_pending:
-        return
-    head = pr.get("headRefOid") or ""
-    if head and prior.get("deploy_failed_head", "") == head:
-        decision.alerts.append(ALERT_DEPLOY_FAILED)
-        return
-    if head and prior.get("deploy_head", "") != head:
-        decision.do_review_lab_deploy = True
 
 
 def _classify_actions(
@@ -99,22 +67,10 @@ def _classify_actions(
     authored: bool,
     decision: Decision,
 ) -> bool:
-    """Set auto-actions (update branch, re-run CI). Returns required_pending.
-
-    A cleanly-behind branch on a strict base is refreshed first; that creates
-    a new head and re-runs CI, so old-head CI work is skipped for that cycle.
-    Both auto-actions are gated on authorship (only touch my own branches).
-    """
+    """Set the CI re-run action. Returns required_pending."""
     head = pr.get("headRefOid") or ""
-    mss = (pr.get("mergeStateStatus") or "").upper()
     failed_entries, required_pending = required_check_status(pr, required)
-    behind = mss == "BEHIND" and required.known and required.strict
-    if authored and behind and prior.get("update_head", "") != head:
-        decision.do_update_branch = True
-    # Only skip CI classification when we are actually updating the branch; an
-    # assigned (or already-updated) behind PR still surfaces failing CI.
-    if not decision.do_update_branch:
-        _classify_ci(failed_entries, required_pending, head, prior, decision, authored)
+    _classify_ci(failed_entries, required_pending, head, prior, decision, authored)
     return required_pending
 
 
@@ -153,7 +109,7 @@ def _nudge_blocked(
     back to the raw rollup and keep the ball on the author rather than nudging
     reviewers about a PR that may be failing.
     """
-    if decision.do_rerun or decision.do_update_branch or required_pending:
+    if decision.do_rerun or required_pending:
         return True
     if not required.known and _has_unfinished_or_failing_check(pr):
         return True

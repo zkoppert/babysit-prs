@@ -12,7 +12,6 @@ from prfixtures import (
     NOW,
     OLD,
     REQUIRED,
-    REQUIRED_LOOSE,
     UNKNOWN,
     check_run,
     make_pr,
@@ -57,48 +56,14 @@ def test_classify_pending_required_does_nothing() -> None:
     assert decision.alerts == []
 
 
-def test_classify_updates_branch_when_strict_and_behind() -> None:
-    decision = classify.classify(
-        make_pr(mergeStateStatus="BEHIND"), REQUIRED, "zkoppert", {}
-    )
-    assert decision.do_update_branch is True
-
-
-def test_classify_update_priority_skips_rerun() -> None:
-    # A behind branch with a failing required check updates first; the
-    # old-head rerun is skipped because the update creates a new head.
+def test_classify_behind_branch_reruns_failed_required_check_without_update() -> None:
     pr = make_pr(
         mergeStateStatus="BEHIND", statusCheckRollup=[check_run("ci", "FAILURE")]
     )
     decision = classify.classify(pr, REQUIRED, "zkoppert", {})
-    assert decision.do_update_branch is True
-    assert decision.do_rerun is False
+    assert decision.do_rerun is True
+    assert decision.rerun_run_ids == [999]
     assert constants.ALERT_CI_STILL_FAILING not in decision.alerts
-
-
-def test_classify_no_update_when_not_strict_or_unknown() -> None:
-    assert (
-        classify.classify(
-            make_pr(mergeStateStatus="BEHIND"), REQUIRED_LOOSE, "zkoppert", {}
-        ).do_update_branch
-        is False
-    )
-    assert (
-        classify.classify(
-            make_pr(mergeStateStatus="BEHIND"), UNKNOWN, "zkoppert", {}
-        ).do_update_branch
-        is False
-    )
-
-
-def test_classify_update_only_once_per_head() -> None:
-    pr = make_pr(mergeStateStatus="BEHIND")
-    assert (
-        classify.classify(
-            pr, REQUIRED, "zkoppert", {"update_head": HEAD}
-        ).do_update_branch
-        is False
-    )
 
 
 def test_classify_conflicts_alert() -> None:
@@ -148,83 +113,9 @@ def test_classify_ready_only_when_clean_and_not_draft() -> None:
     )
 
 
-def test_review_lab_deploys_approved_green_authored_pr_once_per_head() -> None:
-    pr = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
-    first = classify.classify(pr, REQUIRED, ME, {}, review_lab_enabled=True)
-    assert first.do_review_lab_deploy is True
-
-    second = classify.classify(
-        pr, REQUIRED, ME, {"deploy_head": HEAD}, review_lab_enabled=True
-    )
-    assert second.do_review_lab_deploy is False
-
-    failed = classify.classify(
-        pr,
-        REQUIRED,
-        ME,
-        {"deploy_head": HEAD, "deploy_failed_head": HEAD},
-        review_lab_enabled=True,
-    )
-    assert failed.do_review_lab_deploy is False
-    assert constants.ALERT_DEPLOY_FAILED in failed.alerts
-
-
-def test_review_lab_deploy_requires_opt_in_authorship_approval_and_green_ci() -> None:
-    approved = make_pr(reviewDecision="APPROVED", mergeStateStatus="CLEAN")
-    assert classify.classify(approved, REQUIRED, ME, {}).do_review_lab_deploy is False
-    assigned = make_pr(
-        reviewDecision="APPROVED",
-        mergeStateStatus="CLEAN",
-        author={"login": "someone-else"},
-    )
-    assert (
-        classify.classify(
-            assigned, REQUIRED, ME, {}, review_lab_enabled=True
-        ).do_review_lab_deploy
-        is False
-    )
-    unapproved = make_pr(reviewDecision="", mergeStateStatus="CLEAN")
-    assert (
-        classify.classify(
-            unapproved, REQUIRED, ME, {}, review_lab_enabled=True
-        ).do_review_lab_deploy
-        is False
-    )
-    blocked = make_pr(reviewDecision="APPROVED", mergeStateStatus="BLOCKED")
-    assert (
-        classify.classify(
-            blocked, REQUIRED, ME, {}, review_lab_enabled=True
-        ).do_review_lab_deploy
-        is False
-    )
-    pending = make_pr(
-        reviewDecision="APPROVED",
-        mergeStateStatus="CLEAN",
-        statusCheckRollup=[check_run("ci", "", "IN_PROGRESS")],
-    )
-    assert (
-        classify.classify(
-            pending, REQUIRED, ME, {}, review_lab_enabled=True
-        ).do_review_lab_deploy
-        is False
-    )
-    assert (
-        classify.classify(
-            approved, UNKNOWN, ME, {}, review_lab_enabled=True
-        ).do_review_lab_deploy
-        is False
-    )
-
-
 # ---------------------------------------------------------------------------
 # authorship gating: assigned-but-not-authored PRs are alert-only
 # ---------------------------------------------------------------------------
-
-
-def test_assigned_pr_does_not_auto_update_branch() -> None:
-    pr = make_pr(mergeStateStatus="BEHIND", author={"login": "someone-else"})
-    decision = classify.classify(pr, REQUIRED, ME, {})
-    assert decision.do_update_branch is False
 
 
 def test_assigned_pr_does_not_rerun_but_alerts() -> None:
@@ -340,15 +231,12 @@ def test_nudge_not_fired_while_required_pending() -> None:
 
 
 def test_assigned_behind_pr_still_surfaces_failing_ci() -> None:
-    # A strict+behind PR I did not author is not updated (not my branch), but
-    # its failing required check must still be surfaced, not silently skipped.
     pr = make_pr(
         mergeStateStatus="BEHIND",
         author={"login": "someone-else"},
         statusCheckRollup=[check_run("ci", "FAILURE")],
     )
     decision = classify.classify(pr, REQUIRED, ME, {})
-    assert decision.do_update_branch is False
     assert decision.do_rerun is False
     assert constants.ALERT_CI_STILL_FAILING in decision.alerts
 

@@ -24,34 +24,17 @@ def test_parse_args_nudge_weekdays_default_and_override() -> None:
     assert babysit_prs.parse_args(["--nudge-weekdays", "5"]).nudge_weekdays == 5
 
 
-def test_parse_args_review_environment_repos_are_targeted() -> None:
-    args = babysit_prs.parse_args(
-        [
-            "--review-lab-repo",
-            "Example/Repo",
-            "--preview-repo",
-            "Example/UI",
-        ]
-    )
-    assert args.review_lab_repo == ["example/repo"]
-    assert args.preview_repo == ["example/ui"]
-
+@pytest.mark.parametrize("flag", ["--review-lab-repo", "--preview-repo"])
+def test_parse_args_rejects_removed_review_environment_flags(flag: str) -> None:
     with pytest.raises(SystemExit):
-        babysit_prs.parse_args(
-            [
-                "--review-lab-repo",
-                "Example/Repo",
-                "--preview-repo",
-                "example/repo",
-            ]
-        )
+        babysit_prs.parse_args([flag, "example/repo"])
 
 
 def test_main_returns_exit_code(capsys: pytest.CaptureFixture[str]) -> None:
     ok = runner.BabysitStats(scanned=1)
     with mock.patch.object(babysit_prs, "run", return_value=ok):
         assert babysit_prs.main(["--dry-run"]) == 0
-    assert "deployed=0" in capsys.readouterr().out
+    assert "scanned=1 reran=0 notified=0" in capsys.readouterr().out
     err = runner.BabysitStats()
     err.errors.append("boom")
     with mock.patch.object(babysit_prs, "run", return_value=err):

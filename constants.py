@@ -7,8 +7,6 @@ logger = logging.getLogger("babysit-prs")
 
 DEFAULT_STATE_FILE = Path.home() / "Library" / "Logs" / "babysit-prs-state.json"
 
-REVIEW_ENV_TARGETS: frozenset[str] = frozenset({"review-lab", "preview"})
-
 # statusCheckRollup CheckRun conclusions that count as a failure worth
 # re-running.
 FAILURE_CONCLUSIONS: frozenset[str] = frozenset(
@@ -25,8 +23,6 @@ PENDING_STATUSES: frozenset[str] = frozenset(
 ALERT_CONFLICTS = "conflicts"
 ALERT_CHANGES_REQUESTED = "changes-requested"
 ALERT_CI_STILL_FAILING = "ci-failing"
-ALERT_UPDATE_FAILED = "update-failed"
-ALERT_DEPLOY_FAILED = "deploy-failed"
 ALERT_NEW_COMMENT = "new-comment"
 ALERT_READY = "ready-to-merge"
 ALERT_NUDGE_REVIEWERS = "nudge-reviewers"
@@ -40,8 +36,6 @@ ALERT_ORDER: tuple[str, ...] = (
     ALERT_CONFLICTS,
     ALERT_CHANGES_REQUESTED,
     ALERT_CI_STILL_FAILING,
-    ALERT_UPDATE_FAILED,
-    ALERT_DEPLOY_FAILED,
     ALERT_NEW_COMMENT,
     ALERT_NUDGE_REVIEWERS,
     ALERT_READY,
@@ -50,8 +44,6 @@ ALERT_LABELS: dict[str, str] = {
     ALERT_CONFLICTS: "Merge conflicts",
     ALERT_CHANGES_REQUESTED: "Changes requested",
     ALERT_CI_STILL_FAILING: "Failing CI",
-    ALERT_UPDATE_FAILED: "Branch update failed",
-    ALERT_DEPLOY_FAILED: "Review lab deploy failed",
     ALERT_NEW_COMMENT: "New review comment",
     ALERT_NUDGE_REVIEWERS: "Waiting on reviewers, time to nudge",
     ALERT_READY: "Ready to merge",

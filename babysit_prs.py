@@ -6,20 +6,14 @@ tool:
 
 - Re-runs failed **required** checks once per head commit (a flaky-test
   retry), and only notifies you if they are still red after that retry.
-- Updates the branch when the base requires up-to-date branches and the
-  PR is cleanly behind (``mergeStateStatus == BEHIND``), so CI re-runs
-  against the latest base without your involvement.
-- Deploys approved, green PRs to a review environment once per head commit
-  for repositories explicitly enabled with ``--review-lab-repo`` or
-  ``--preview-repo``.
 - Notifies you on macOS when something needs a human: merge conflicts,
-  changes requested, a new human review comment, a failed branch update,
-  or a PR that is green and ready to merge.
+  changes requested, a new human review comment, or a PR that is green
+  and ready to merge.
 
 Design goals:
 
-- Auto-act with guardrails: only touch **required** checks and only
-  update-branch when the base is strict and the branch is cleanly behind.
+- Auto-act with guardrails: only touch **required** checks. Branch updates
+  remain manual so new commits do not dismiss required approvals.
   Anything ambiguous (unknown required set, conflicts) is left for you.
 - Quiet by default: a per-PR state signature means you are pinged only
   when a PR's notable state actually changes, not every run.
@@ -32,8 +26,7 @@ them clickable; otherwise it falls back to ``osascript``).
 
 Usage:
     babysit_prs.py [--owner OWNER] [--active-days N] [--allowed-repo OWNER/REPO]
-                   [--skip-repo OWNER/REPO] [--review-lab-repo OWNER/REPO]
-                   [--preview-repo OWNER/REPO] [--dry-run] [--no-notify]
+                   [--skip-repo OWNER/REPO] [--dry-run] [--no-notify]
                    [--state-file PATH] [--verbose]
 """
 
@@ -52,9 +45,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description=(
-            "Babysit your own open PRs: re-run failed required checks, update "
-            "cleanly-behind branches, and notify you on macOS when something "
-            "needs a human."
+            "Babysit your own open PRs: re-run failed required checks and notify "
+            "you on macOS when something needs a human."
         ),
     )
     parser.add_argument(
@@ -76,7 +68,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview decisions; do not re-run checks, update branches, or notify.",
+        help="Preview decisions; do not re-run checks or notify.",
     )
     parser.add_argument(
         "--active-days",
@@ -114,26 +106,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Never act on the given repo (for example a fixture). Repeatable.",
     )
     parser.add_argument(
-        "--review-lab-repo",
-        action="append",
-        default=[],
-        metavar="OWNER/REPO",
-        help=(
-            "Deploy approved, green authored PRs in this repo to review-lab. "
-            "Repeatable; disabled by default."
-        ),
-    )
-    parser.add_argument(
-        "--preview-repo",
-        action="append",
-        default=[],
-        metavar="OWNER/REPO",
-        help=(
-            "Deploy approved, green authored PRs in this repo to preview. "
-            "Repeatable; disabled by default."
-        ),
-    )
-    parser.add_argument(
         "--no-notify",
         action="store_true",
         help="Do everything except send macOS notifications.",
@@ -143,16 +115,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable debug logging.",
     )
-    args = parser.parse_args(argv)
-    args.review_lab_repo = [repo.casefold() for repo in args.review_lab_repo]
-    args.preview_repo = [repo.casefold() for repo in args.preview_repo]
-    overlap = set(args.review_lab_repo) & set(args.preview_repo)
-    if overlap:
-        parser.error(
-            "repositories cannot use both review-lab and preview: "
-            + ", ".join(sorted(overlap))
-        )
-    return args
+    return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -163,10 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(message)s",
     )
     stats = run(args)
-    print(
-        f"scanned={stats.scanned} reran={stats.reran} "
-        f"updated={stats.updated} deployed={stats.deployed} notified={stats.notified}"
-    )
+    print(f"scanned={stats.scanned} reran={stats.reran} notified={stats.notified}")
     for err in stats.errors:
         print(f"ERROR: {err}", file=sys.stderr)
     return 1 if stats.errors else 0

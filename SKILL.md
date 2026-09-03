@@ -68,6 +68,8 @@ python3 babysit_prs.py --nudge-weekdays 5
 - Do not act on PRs the user did not author. Auto-actions are author-only; PRs
   they are merely assigned to are alert-only.
 - Never deploy PRs to a review environment. Deployment remains a manual action.
+- Never create a PR or issue comment, including `@copilot review`. Requesting a
+  Copilot review requires an explicit user action outside this skill.
 - The Copilot reviewer's comments DO trigger a notification (they are
   actionable), but do not draft replies to them expecting a response; the
   Copilot reviewer cannot respond. Act on the feedback directly instead.

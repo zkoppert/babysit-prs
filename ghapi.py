@@ -10,8 +10,27 @@ from typing import Any
 from constants import logger
 
 
+def _is_comment_write(args: list[str]) -> bool:
+    """Return whether a gh invocation would create a PR or issue comment."""
+    if len(args) >= 2 and args[0] in {"pr", "issue"} and args[1] == "comment":
+        return True
+    if not args or args[0] != "api":
+        return False
+    method = ""
+    for index, arg in enumerate(args):
+        if arg in {"--method", "-X"} and index + 1 < len(args):
+            method = args[index + 1].upper()
+        elif arg.startswith("--method="):
+            method = arg.split("=", 1)[1].upper()
+    return method in {"POST", "PUT", "PATCH"} and any(
+        "/comments" in arg for arg in args[1:]
+    )
+
+
 def run_gh(args: list[str], *, timeout: int = 60) -> str:
     """Run ``gh <args>`` and return stdout, or raise on non-zero exit."""
+    if _is_comment_write(args):
+        raise ValueError("babysit-prs must not create GitHub comments")
     cmd = ["gh", *args]
     logger.debug("running: %s", " ".join(cmd))
     result = subprocess.run(

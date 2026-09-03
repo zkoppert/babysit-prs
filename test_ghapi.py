@@ -13,6 +13,47 @@ import pytest
 import ghapi
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["pr", "comment", "1", "--repo", "o/r", "--body", "@copilot review"],
+        ["issue", "comment", "1", "--repo", "o/r", "--body", "review"],
+        [
+            "api",
+            "/repos/o/r/issues/1/comments",
+            "--method",
+            "POST",
+            "-f",
+            "body=@copilot review",
+        ],
+        [
+            "api",
+            "/repos/o/r/pulls/1/comments",
+            "--method=POST",
+            "-f",
+            "body=review",
+        ],
+    ],
+)
+def test_run_gh_rejects_comment_writes(args: list[str]) -> None:
+    with mock.patch.object(ghapi.subprocess, "run") as run_mock:
+        with pytest.raises(ValueError, match="must not create GitHub comments"):
+            ghapi.run_gh(args)
+    run_mock.assert_not_called()
+
+
+def test_run_gh_allows_comment_reads() -> None:
+    with mock.patch.object(
+        ghapi.subprocess,
+        "run",
+        return_value=subprocess.CompletedProcess([], 0, stdout="[]", stderr=""),
+    ) as run_mock:
+        assert (
+            ghapi.run_gh(["api", "/repos/o/r/pulls/1/comments", "--paginate"]) == "[]"
+        )
+    run_mock.assert_called_once()
+
+
 def test_fetch_review_comments_normalizes_rest_shape() -> None:
     pages = json.dumps(
         [

@@ -13,6 +13,7 @@ For each of your recently-active open PRs (those you authored or are assigned to
 - **Re-runs failed required checks** once per head commit (`gh run rerun --failed` on the exact Actions runs backing the failed required checks), then notifies you only if they are still red after that retry. This is the flaky-test retry.
 - **Notifies you** when a PR needs a human: merge conflicts, changes requested, a new review comment (including inline review-thread replies and the Copilot reviewer's comments; noisy bots like CI and Dependabot are excluded), a required check still failing after the retry, a non-draft PR that is green and ready to merge, or a PR that has sat ready with no activity for several weekdays and needs a reviewer nudge.
 - **Leaves base branch updates manual** so the tool never adds commits that could dismiss required approvals.
+- **Never creates PR or issue comments**, including comments that request a Copilot review.
 
 ### Whose PRs, and which ones
 

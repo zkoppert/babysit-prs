@@ -33,7 +33,7 @@ For a PR you authored that is open, non-draft, and has had no updates, reviews, 
 
 ### Quiet by default
 
-A per-PR state signature means you are pinged only when a PR's notable state actually changes, not every run. Each notification is one PR: the title is `owner/repo#N`, the subtitle names the reasons, and the body is the PR URL.
+See [How de-duping works](#how-de-duping-works) for notification suppression rules. Each notification is one PR: the title is `owner/repo#N`, the subtitle names the reasons, and the body is the PR URL.
 
 ## Requirements
 
@@ -117,11 +117,14 @@ Invoke the wrapper (see [`examples/babysit-prs`](examples/babysit-prs)) rather t
 
 ## How de-duping works
 
-State lives in a small JSON file mapping each PR URL to `{rerun_head, last_activity, notified_sig}`:
+State lives in a small JSON file mapping each PR URL to its re-run and notification state:
 
 - `rerun_head`: the head commit a re-run was last attempted for, so it is tried once per commit.
-- `last_activity`: the newest human review or comment timestamp seen, for new-comment detection.
-- `notified_sig`: the acknowledged persistent alert signature. Empty or subset alert sets preserve it, so existing alerts can disappear and return without another notification. A new alert replaces the signature after successful delivery. For example, alternating between failing CI and failing CI with conflicts stays quiet once both alerts are acknowledged. New review comments and reviewer nudges still notify separately.
+- `last_activity`: the newest review or comment timestamp used for new-comment detection.
+- `notified_sig`: the acknowledged persistent alert signature. Empty or subset persistent alert sets preserve it, so existing alerts can disappear and return without another notification. After successful delivery of a new persistent alert, the current signature replaces the acknowledged one. Alternating between failing CI and failing CI with conflicts stays quiet once both alerts are acknowledged. A `ready-to-merge` → `changes-requested` → `ready-to-merge` sequence still notifies at each transition. New review comments and reviewer nudges are handled separately.
+- `nudged_at`: the PR's `updatedAt` at the last delivered reviewer nudge; new activity permits another nudge after the next idle period.
+
+Failed deliveries and `--no-notify` leave pending notifications unacknowledged, so they can be retried.
 
 The state file is written atomically, and a non-blocking lock means overlapping runs skip cleanly instead of racing.
 

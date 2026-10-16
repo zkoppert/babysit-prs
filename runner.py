@@ -19,13 +19,7 @@ from constants import (
     logger,
 )
 from dedup import advance_dedup_state, should_notify
-from effects import (
-    acquire_lock,
-    load_state,
-    notify,
-    rerun_runs,
-    save_state,
-)
+from effects import acquire_lock, load_state, notify, rerun_runs, save_state
 from ghapi import fetch_pr, fetch_review_comments, get_my_login, search_my_open_prs
 
 
@@ -164,7 +158,7 @@ def _process_pr(
     ctx: RunContext,
     stats: BabysitStats,
 ) -> None:
-    """Auto-act on one PR and notify when its state changed."""
+    """Apply one PR's actions and delegate notifications to ``_decide_notify``."""
     required = ctx.required_for(repo, pr.get("baseRefName") or "")
     pr_url = pr.get("url") or f"https://github.com/{repo}/pull/{number}"
     prior = ctx.state.get(pr_url, {})
@@ -209,11 +203,7 @@ def _decide_notify(
     stats: BabysitStats,
     new_state: dict[str, Any],
 ) -> None:
-    """Notify once if the PR's state changed, then advance the de-dup state.
-
-    The decision of whether to notify and how to advance the de-dup state is
-    pure and lives in ``dedup``; this only wires it to the notification I/O.
-    """
+    """Connect pure ``dedup`` decisions to notification I/O and state updates."""
     updated_at = pr.get("updatedAt") or ""
     notify_now = should_notify(decision.alerts, updated_at, new_state)
     delivered = _emit(title, decision, pr_url, ctx, stats) if notify_now else False

@@ -1,4 +1,4 @@
-"""Side effects: mutate GitHub (rerun/update), notify macOS, persist state."""
+"""Side effects: re-run GitHub Actions, notify macOS, persist state."""
 
 from __future__ import annotations
 
@@ -19,9 +19,7 @@ from ghapi import run_gh
 def rerun_runs(repo: str, run_ids: list[int], *, dry_run: bool) -> bool:
     """Re-run the failed jobs of the given Actions runs.
 
-    Returns True when at least one re-run was triggered (or in dry-run),
-    so the caller only records ``rerun_head`` when a re-run actually
-    happened rather than for a re-run that never occurred.
+    Returns True when at least one re-run was triggered (or in dry-run).
     """
     if not run_ids:
         return False

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import constants
 import dedup
 
@@ -32,6 +34,63 @@ def test_should_notify_on_new_signature_then_deduped() -> None:
 
 def test_should_notify_empty_alerts_is_false() -> None:
     assert dedup.should_notify([], "", {}) is False
+
+
+@pytest.mark.parametrize(
+    ("sequence", "expected"),
+    [
+        (
+            [
+                ["ci-failing"],
+                ["ci-failing", "conflicts"],
+                ["ci-failing"],
+                ["ci-failing", "conflicts"],
+                [],
+                ["ci-failing"],
+            ],
+            [True, True, False, False, False, False],
+        ),
+        (
+            [["ready-to-merge"], ["changes-requested"], ["ready-to-merge"]],
+            [True, True, True],
+        ),
+        (
+            [["ci-failing"], ["ready-to-merge"], ["ci-failing"]],
+            [True, True, True],
+        ),
+    ],
+)
+def test_persistent_alert_transitions(
+    sequence: list[list[str]], expected: list[bool]
+) -> None:
+    state: dict = {}
+    observed = []
+    for alerts in sequence:
+        notify_now = dedup.should_notify(alerts, "", state)
+        observed.append(notify_now)
+        dedup.advance_dedup_state(
+            state,
+            alerts=alerts,
+            current_activity=None,
+            updated_at="",
+            notify_now=notify_now,
+            delivered=notify_now,
+        )
+    assert observed == expected
+
+
+def test_subset_preserves_acknowledged_alerts_and_records_new_comment() -> None:
+    state = {"notified_sig": "ci-failing|conflicts", "last_activity": "old"}
+    dedup.advance_dedup_state(
+        state,
+        alerts=[constants.ALERT_CI_STILL_FAILING, constants.ALERT_NEW_COMMENT],
+        current_activity="new",
+        updated_at="",
+        notify_now=True,
+        delivered=True,
+    )
+    assert state["notified_sig"] == "ci-failing|conflicts"
+    assert state["last_activity"] == "new"
 
 
 def test_should_notify_new_comment_always_fires() -> None:

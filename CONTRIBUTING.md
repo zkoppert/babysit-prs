@@ -21,7 +21,7 @@ make lint    # checks black, isort, flake8, pylint (>=9.0), mypy
 make test    # pytest with coverage (>=90%)
 ```
 
-`make lint` only checks formatting; run `make format` to apply it.
+`make lint` checks code without changing it; run `make format` to apply formatting.
 
 Please add or update tests for any behavior change. The decision logic in
 `classify()` is pure and fully unit-tested; keep it that way by pushing side
@@ -29,7 +29,6 @@ effects (gh calls, notifications) to the edges.
 
 ## Guidelines
 
-- Keep the guardrails intact: only **required** checks are ever re-run, and a
-  branch is only updated when the base is strict and the PR is cleanly behind.
+- Keep the [guardrails](README.md#guardrails) intact.
 - Prefer small, single-purpose pull requests with a clear "why".
 - Comments should explain *why*, not restate *what* the code does.

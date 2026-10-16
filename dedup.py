@@ -33,15 +33,20 @@ def _nudge_event(alerts: list[str], updated_at: str, nudged_at: str) -> bool:
     return ALERT_NUDGE_REVIEWERS in alerts and updated_at != nudged_at
 
 
+def _has_new_persistent_alerts(alerts: list[str], state: dict) -> bool:
+    current = set(signature(alerts).split("|")) - {""}
+    previous = set(state.get("notified_sig", "").split("|"))
+    return bool(current - previous)
+
+
 def should_notify(alerts: list[str], updated_at: str, state: dict) -> bool:
     """Return True when the PR's current alerts warrant a notification.
 
-    Notify when the persistent signature changed, or on an event-like alert
+    Notify when a persistent alert was not already acknowledged, or on an event-like alert
     (a new review comment, or a nudge for a fresh idle episode).
     """
-    sig = signature(alerts)
     return (
-        (bool(sig) and sig != state.get("notified_sig", ""))
+        _has_new_persistent_alerts(alerts, state)
         or ALERT_NEW_COMMENT in alerts
         or _nudge_event(alerts, updated_at, state.get("nudged_at", ""))
     )
@@ -60,14 +65,15 @@ def advance_dedup_state(
 
     A notification that was needed but not delivered leaves the state
     untouched, so it is retried on the next run. Otherwise the persistent
-    signature is advanced (preserving a previously-notified signature when the
-    current one is empty, so an alert that transiently disappears and reappears
-    on the same commit is not re-notified), the latest seen activity is
+    signature is replaced only when a new persistent alert appears. Empty
+    or subset alert sets preserve the acknowledged signature, so alerts that
+    disappear and reappear do not re-notify. The latest seen activity is
     recorded, and a fired nudge is stamped with the ``updatedAt`` it fired at.
     """
     if notify_now and not delivered:
         return
-    state["notified_sig"] = signature(alerts) or state.get("notified_sig", "")
+    if _has_new_persistent_alerts(alerts, state):
+        state["notified_sig"] = signature(alerts)
     if current_activity:
         state["last_activity"] = current_activity
     if ALERT_NUDGE_REVIEWERS in alerts:

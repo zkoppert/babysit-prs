@@ -15,8 +15,7 @@ Design goals:
 - Auto-act with guardrails: only touch **required** checks. Branch updates
   remain manual so new commits do not dismiss required approvals.
   Anything ambiguous (unknown required set, conflicts) is left for you.
-- Quiet by default: a per-PR state signature means you are pinged only
-  when a PR's notable state actually changes, not every run.
+- Quiet by default: see "How de-duping works" in README.md.
 - Dry-run friendly: ``--dry-run`` skips every mutation and notification.
 - Pure stdlib: no third-party runtime dependencies.
 

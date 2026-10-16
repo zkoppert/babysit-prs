@@ -121,7 +121,7 @@ State lives in a small JSON file mapping each PR URL to `{rerun_head, last_activ
 
 - `rerun_head`: the head commit a re-run was last attempted for, so it is tried once per commit.
 - `last_activity`: the newest human review or comment timestamp seen, for new-comment detection.
-- `notified_sig`: the persistent alert signature last notified, so an unchanged state stays quiet and an alert that transiently disappears and reappears on the same commit is not re-notified.
+- `notified_sig`: the acknowledged persistent alert signature. Empty or subset alert sets preserve it, so existing alerts can disappear and return without another notification. A new alert replaces the signature after successful delivery. For example, alternating between failing CI and failing CI with conflicts stays quiet once both alerts are acknowledged. New review comments and reviewer nudges still notify separately.
 
 The state file is written atomically, and a non-blocking lock means overlapping runs skip cleanly instead of racing.
 

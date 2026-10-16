@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from prfixtures import ME, OLD, REQUIRED, _args, make_pr
+import pytest
+from prfixtures import ME, OLD, REQUIRED, _args, _patch_run, make_pr, status_context
 
 import constants
 import runner
@@ -64,6 +65,51 @@ def test_run_ready_flap_does_not_renotify(tmp_path: Path) -> None:
         runner.run(_args(tmp_path))
         runner.run(_args(tmp_path))
         assert m["notify"].call_count == 1
+
+
+@pytest.mark.parametrize("first_delivery", ["success", "failure", "suppressed"])
+def test_run_partial_alert_flap_does_not_renotify(
+    tmp_path: Path, first_delivery: str
+) -> None:
+    failing = make_pr(
+        mergeStateStatus="BLOCKED",
+        statusCheckRollup=[status_context("ci", "FAILURE")],
+    )
+    conflicted = dict(failing, mergeable="CONFLICTING", mergeStateStatus="DIRTY")
+    with _patch_run(failing, notify=mock.DEFAULT) as mocks:
+        mocks["notify"].return_value = True
+        assert runner.run(_args(tmp_path)).notified == 1
+        mocks["fetch_pr"].return_value = conflicted
+        mocks["notify"].return_value = first_delivery != "failure"
+        result = runner.run(_args(tmp_path, no_notify=first_delivery == "suppressed"))
+        assert result.notified == int(first_delivery == "success")
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert saved[failing["url"]]["notified_sig"] == (
+            "ci-failing|conflicts" if first_delivery == "success" else "ci-failing"
+        )
+        mocks["notify"].return_value = True
+        assert runner.run(_args(tmp_path)).notified == int(first_delivery != "success")
+        for pr in [failing, conflicted, failing, conflicted]:
+            mocks["fetch_pr"].return_value = pr
+            assert runner.run(_args(tmp_path)).notified == 0
+        assert mocks["notify"].call_args.args[1] == "Merge conflicts, Failing CI"
+    saved = json.loads((tmp_path / "state.json").read_text())
+    assert saved[failing["url"]]["notified_sig"] == "ci-failing|conflicts"
+
+
+def test_run_notifies_when_ready_returns_after_requested_changes(
+    tmp_path: Path,
+) -> None:
+    ready = make_pr(mergeStateStatus="CLEAN")
+    requested = make_pr(mergeStateStatus="BLOCKED", reviewDecision="CHANGES_REQUESTED")
+    with _patch_run([ready, requested, ready], notify=mock.DEFAULT) as mocks:
+        mocks["notify"].return_value = True
+        assert [runner.run(_args(tmp_path)).notified for _ in range(3)] == [1, 1, 1]
+        assert [call.args[1] for call in mocks["notify"].call_args_list] == [
+            "Ready to merge",
+            "Changes requested",
+            "Ready to merge",
+        ]
 
 
 def test_run_new_comment_then_quiet(tmp_path: Path) -> None:
